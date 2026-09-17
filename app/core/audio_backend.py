@@ -73,9 +73,11 @@ if IS_MAC:
             self.backend = None
             return self
 
-        @objc.signature("v@:@c")
+        @objc.signature(b"v@:@c")
         def audioPlayerDidFinishPlaying_successfully_(self, player, flag):
-            # v@:@c = void; self; sel; player(id); successfully(BOOL 编为 char)
+            # b"v@:@c" = void; self; sel; player(id); successfully(BOOL 编为 char)
+            # 注意：PyObjC>=12 要求签名传 bytes 而非 str，否则 makeSignature 报
+            # 'a bytes-like object is required, not str'
             if self.backend is not None:
                 self.backend._on_finished()
 
