@@ -3,10 +3,25 @@
 所有功能窗口统一使用该主题；宠物窗为透明无边框，单独处理。
 """
 
-QSS = """
+import sys
+
+# 平台相关字体栈：macOS 没有 Microsoft YaHei，引用它会触发 Qt 每次启动弹出
+# "Replace uses of missing font family" 警告并多耗 ~500ms。按平台选首选字体，
+# 既消除告警、又保证各平台用上原生中文字体。
+if sys.platform == "darwin":
+    PRIMARY_FONT = "PingFang SC"
+    UI_FONT_STACK = "'PingFang SC', 'Hiragino Sans GB', 'Heiti SC', sans-serif"
+elif sys.platform == "win32":
+    PRIMARY_FONT = "Microsoft YaHei"
+    UI_FONT_STACK = "'Microsoft YaHei', 'PingFang SC', 'Segoe UI', sans-serif"
+else:
+    PRIMARY_FONT = "Noto Sans CJK SC"
+    UI_FONT_STACK = "'Noto Sans CJK SC', 'WenQuanYi Micro Hei', sans-serif"
+
+QSS = ("""
 /* ===== 全局 ===== */
 QWidget {
-    font-family: "Microsoft YaHei", "PingFang SC", "Segoe UI", sans-serif;
+    font-family: {ui_font};
     color: #3d2b1f;
 }
 QDialog { background: transparent; }
@@ -75,7 +90,7 @@ QScrollArea { background: transparent; }
 QScrollBar:vertical { width: 8px; background: transparent; margin: 4px 0; }
 QScrollBar::handle:vertical { background: rgba(160,142,122,0.35); border-radius: 4px; min-height: 28px; }
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
-"""
+""").replace("{ui_font}", UI_FONT_STACK)
 
 # 主题色常量（供代码使用）
 COLOR = {

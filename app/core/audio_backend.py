@@ -109,9 +109,25 @@ if IS_MAC:
 
         def _create_player(self, path: str):
             url = NSURL.fileURLWithPath_(path)
-            av = AVAudioPlayer.alloc().initWithContentsOfURL_error_(url, None)
+            if url is None:
+                self.errorOccurred.emit(-1, "AVAudioPlayer 无效路径")
+                self.mediaStatusChanged.emit(MediaStatus.InvalidMedia)
+                return
+            # initWithContentsOfURL:error: 的 NSError** 输出参数在 PyObjC 下会返回
+            # (player, error) 元组（版本相关）。run#27 真机即此表现，直接对元组调
+            # setDelegate_ 触发 "'tuple' object has no attribute 'setDelegate_'" 崩溃。
+            # 统一拆包，兼容“返回元组”与“直接返回 player”两种行为。
+            res = AVAudioPlayer.alloc().initWithContentsOfURL_error_(url, None)
+            if isinstance(res, tuple):
+                av = res[0]
+                error = res[1] if len(res) > 1 else None
+            else:
+                av, error = res, None
             if av is None:
-                self.errorOccurred.emit(-1, "AVAudioPlayer init failed")
+                msg = "AVAudioPlayer 初始化失败"
+                if error is not None:
+                    msg = f"AVAudioPlayer 初始化失败: {error}"
+                self.errorOccurred.emit(-1, msg)
                 self.mediaStatusChanged.emit(MediaStatus.InvalidMedia)
                 return
             av.setDelegate_(self._delegate)

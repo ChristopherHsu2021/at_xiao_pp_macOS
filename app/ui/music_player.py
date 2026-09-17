@@ -39,6 +39,7 @@ except ImportError:  # pragma: no cover
 from app.core import assets, config, covers, lyrics, music_api
 from app.core import audio_meta
 from app.core.audio_backend import create_audio_backend
+from app.ui.style import UI_FONT_STACK, PRIMARY_FONT  # 平台相关字体栈（macOS 用 PingFang SC，避开缺失的 Microsoft YaHei）
 
 # macOS 使用系统原生 AVFoundation 后端（见 app/core/audio_backend.py），
 # 彻底绕开 PyQt6.QtMultimedia 在打包 .app 中后端插件 @rpath 解析失败的坑；
@@ -53,12 +54,12 @@ from app.core.i18n import tr
 from app.ui.context_menu import MENU_QSS
 
 
-PLAYER_QSS = """
+PLAYER_QSS = ("""
 QWidget#playerCard {
     background: #fffaf5;
     border: 1px solid rgba(255,255,255,0.86);
     border-radius: 20px;
-    font-family: 'Microsoft YaHei', 'PingFang SC', 'Segoe UI';
+    font-family: {ui_font};
 }
 QLabel#trackTitle { color: #3d2b1f; font-size: 14px; font-weight: 800; }
 QLabel#artist { color: #a08e7a; font-size: 11px; font-weight: 500; }
@@ -118,7 +119,7 @@ QPushButton#uploadBtn:hover { background: rgba(249,117,16,0.10); border-color: r
 QWidget#dropOverlay {
     background: #fffaf5;
     border-radius: 20px;
-    font-family: 'Microsoft YaHei', 'PingFang SC', 'Segoe UI';
+    font-family: {ui_font};
 }
 QLabel#dropMessage { color: #3d2b1f; font-size: 15px; font-weight: 800; }
 QPushButton#dropPrimary, QPushButton#dropSecondary {
@@ -158,7 +159,7 @@ QPushButton#rowFav:hover { background: rgba(249,117,16,0.12); color: #f97510; }
 QScrollBar:vertical { width: 4px; background: transparent; margin: 4px 0; }
 QScrollBar::handle:vertical { background: rgba(160,142,122,0.42); border-radius: 2px; min-height: 24px; }
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
-"""
+""").replace("{ui_font}", UI_FONT_STACK)
 
 PLAYER_W = 336
 PLAYER_H = 280
@@ -1716,7 +1717,7 @@ class GradientLyricLabel(QWidget):
         p.fillRect(self.rect(), Qt.GlobalColor.transparent)
         p.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceOver)
         text = self._text.strip() or _marked_lyric(_default_lyric())
-        font = QFont("Microsoft YaHei", self._font_size)
+        font = QFont(PRIMARY_FONT, self._font_size)
         font.setWeight(QFont.Weight.DemiBold)
         p.setFont(font)
         metrics = p.fontMetrics()
@@ -1815,13 +1816,13 @@ QPushButton#toolBtn {
     background: transparent;
     border: none;
     color: #f97510;
-    font-family: 'Microsoft YaHei', 'Segoe UI';
+    font-family: {ui_font};
     font-size: 16px;
     font-weight: 800;
     padding: 0;
 }
 QPushButton#toolBtn:hover { color: #ff9a3d; }
-""")
+""".replace("{ui_font}", UI_FONT_STACK))
         self._font_buttons = [self.font_up_b, self.font_down_b, self.lyric_plus_b, self.lyric_minus_b]
         self.loop_b.setToolTip(tr("循环模式"))
         self.prev_b.setToolTip(tr("上一首"))
@@ -1895,7 +1896,7 @@ QPushButton#toolBtn {{
     background: transparent;
     border: none;
     color: #f97510;
-    font-family: 'Microsoft YaHei', 'Segoe UI';
+    font-family: {UI_FONT_STACK};
     font-size: {max(12, int(16 * s))}px;
     font-weight: 800;
     padding: 0;
