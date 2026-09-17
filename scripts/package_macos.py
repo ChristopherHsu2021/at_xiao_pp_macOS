@@ -81,13 +81,23 @@ def ensure_icns() -> None:
     tmp = tempfile.mkdtemp(prefix="atpp_iconset_")
     iconset = Path(tmp) / "app.iconset"
     iconset.mkdir()
-    sizes = [16, 32, 64, 128, 256, 512, 1024]
-    for s in sizes:
-        out = iconset / f"icon_{s}x{s}.png"
-        _run(["sips", "-z", str(s), str(s), str(png), "--out", str(out)])
-        if s * 2 <= 1024:
-            out2 = iconset / f"icon_{s}x{s}@2x.png"
-            _run(["sips", "-z", str(s * 2), str(s * 2), str(png), "--out", str(out2)])
+    # Apple 标准 iconset 恰好 10 个成员（多出 icon_64x64/icon_1024x1024 等非标准
+    # 文件名会让 iconutil 直接报 "Failed to generate ICNS"，已踩坑验证）。
+    entries = [
+        ("icon_16x16.png", 16),
+        ("icon_16x16@2x.png", 32),
+        ("icon_32x32.png", 32),
+        ("icon_32x32@2x.png", 64),
+        ("icon_128x128.png", 128),
+        ("icon_128x128@2x.png", 256),
+        ("icon_256x256.png", 256),
+        ("icon_256x256@2x.png", 512),
+        ("icon_512x512.png", 512),
+        ("icon_512x512@2x.png", 1024),
+    ]
+    for name, px in entries:
+        out = iconset / name
+        _run(["sips", "-z", str(px), str(px), str(png), "--out", str(out)])
     _run(["iconutil", "--convert", "icns", "--output", str(icns), str(iconset)])
     print(f"已生成：{icns}")
 
