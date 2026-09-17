@@ -158,12 +158,50 @@ def _prune_app(app_dir: Path) -> None:
         print(f"removed QtPdf framework: {qt_pdf}")
 
 
+def _ensure_qt_conf(app_dir: Path) -> None:
+    """显式写入 qt.conf，强制 Qt 用文件系统路径解析 Qt 库/插件，而非查询主 bundle。
+
+    关键修复：PyQt6/Qt 6.x 在 .so 静态初始化期会调用 QLibraryInfo::path()
+    -> CFBundleCopyBundleURL()，若 qt.conf 缺失则该调用在 CFBundleGetMainBundle()
+    返回 NULL 时直接 SIGSEGV（EXC_BAD_ACCESS）。显式给出 Prefix 可彻底绕开 bundle 查询。
+    """
+    macos_dir = app_dir / "Contents" / "MacOS"
+    # 自动定位 PyQt6/Qt6 目录（one-folder 通常在 Contents/MacOS/PyQt6/Qt6）
+    qt6_dirs = [p for p in app_dir.rglob("PyQt6/Qt6") if p.is_dir()]
+    if not qt6_dirs:
+        print("警告：未找到 PyQt6/Qt6 目录，跳过 qt.conf 写入")
+        return
+    qt6_dir = qt6_dirs[0]
+    # Prefix 为相对于 qt.conf 所在目录（Contents/MacOS）的路径
+    prefix = os.path.relpath(qt6_dir, macos_dir)
+    conf = (
+        "[Paths]\n"
+        f"Prefix = {prefix}\n"
+        f"Libraries = {prefix}/lib\n"
+        f"Plugins = {prefix}/plugins\n"
+        f"Imports = {prefix}/imports\n"
+        f"Qml2Imports = {prefix}/qml\n"
+        f"ArchData = {prefix}\n"
+        f"Data = {prefix}\n"
+        f"Translations = {prefix}/translations\n"
+    )
+    # Qt 查找顺序：可执行文件同目录 -> ../Resources；两者都写，确保命中
+    targets = [macos_dir / "qt.conf"]
+    resources_dir = app_dir / "Contents" / "Resources"
+    if resources_dir.exists():
+        targets.append(resources_dir / "qt.conf")
+    for t in targets:
+        t.write_text(conf, encoding="utf-8")
+        print(f"wrote qt.conf -> {t} (Prefix={prefix})")
+
+
 def build_app() -> Path:
     _pyinstaller(ROOT / "build.spec", True)
     app = DIST / "AT小PP.app"
     if not app.exists():
         raise FileNotFoundError(f"未生成应用包：{app}")
     _prune_app(app)
+    _ensure_qt_conf(app)
     _codesign(app)
     return app
 
