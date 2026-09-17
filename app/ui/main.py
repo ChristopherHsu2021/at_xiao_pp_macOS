@@ -18,6 +18,18 @@ from datetime import datetime
 if sys.platform == "darwin":
     os.environ.setdefault("QT_MAC_WANTS_LAYER", "1")
 
+# macOS 冻结包（.app）：OpenSSL 的默认 CA 路径指向构建机的 Python 安装目录，
+# 在用户机器上不存在 → urllib/https 全部 CERTIFICATE_VERIFY_FAILED，
+# 表现为音乐播放器「网络搜索彻底失效」（Windows 有系统证书商店回退所以没事）。
+# 用 certifi 的 CA 包兜底（在首次任何网络请求前设置）。
+if sys.platform == "darwin" and not os.environ.get("SSL_CERT_FILE"):
+    try:
+        import certifi
+
+        os.environ["SSL_CERT_FILE"] = certifi.where()
+    except ImportError:
+        pass
+
 from PyQt6.QtWidgets import QApplication
 from PyQt6.QtGui import QIcon
 from PyQt6.QtCore import QTimer, QPoint
@@ -171,7 +183,7 @@ class App:
             if now >= when and t.get("notified") != notify_key:
                 t["notified"] = notify_key
                 changed = True
-                self.tray.notify(tr_task(t["content"]), "⏰ " + tr_task("时间到捏"))
+                self.tray.notify(tr_task(t["content"]), "⏰️ " + tr_task("时间到捏"))
                 say(t["content"] + "，时间到捏")
         if changed:
             todo.save(tasks)
@@ -181,7 +193,7 @@ class App:
         self.stop_alarm()
         self._alarm_active = True
         name = a.get("ringtone") or a.get("custom_text") or ""
-        self.tray.notify(tr_alarm("闹钟"), "⏰ " + (name or tr_alarm("时间到捏")))
+        self.tray.notify(tr_alarm("闹钟"), "⏰️ " + (name or tr_alarm("时间到捏")))
         if a.get("ringtone"):
             import os
             from app.core import assets

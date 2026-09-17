@@ -59,13 +59,14 @@ datas = [
     ("data/character_config.json", "data"),
     ("data/settings.json", "data"),
 ]
-if IS_MAC:
-    # 语音样例目录在 macOS 打包中可省略（仓库内为空目录），保持功能一致。
-    pass
-else:
+# 预录制语音样例（仓库内实际有 100 个 wav，已纳入 git）：必须打进所有平台包，
+# 否则 macOS 上 find_prepared() 找不到内置音频 → 回退系统 say，语音播报不走预录制。
+datas += [
+    ("data/voice/Generated Voice Media", "data/voice/Generated Voice Media"),
+    ("data/voice/Upload Voice Media", "data/voice/Upload Voice Media"),
+]
+if not IS_MAC:
     datas += [
-        ("data/voice/Generated Voice Media", "data/voice/Generated Voice Media"),
-        ("data/voice/Upload Voice Media", "data/voice/Upload Voice Media"),
         ("uninstall_at_xiaopp.bat", "."),
         ("uninstall_launcher.vbs", "."),
     ]

@@ -380,7 +380,7 @@ class AlarmWindow(QDialog):
         root = QVBoxLayout(page)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
-        root.addWidget(self._bar("⏰ " + tr("闹钟"), True))
+        root.addWidget(self._bar("⏰️ " + tr("闹钟"), True))
 
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
@@ -538,7 +538,7 @@ class AlarmWindow(QDialog):
         return label
 
     def retranslate_ui(self):
-        self._list_title.setText("⏰ " + tr("闹钟"))
+        self._list_title.setText("⏰️ " + tr("闹钟"))
         self._list_add_btn.setText("+ " + tr("添加"))
         self._list_back_btn.setText(tr("返回"))
         self._form_title.setText(tr("编辑闹钟") if self._editing_alarm else tr("添加闹钟"))

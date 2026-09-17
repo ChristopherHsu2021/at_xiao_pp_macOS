@@ -6,4 +6,5 @@ pycryptodome>=3.20
 opencc-python-reimplemented>=0.1.7
 pypinyin>=0.50
 audioop-lts>=0.2
+certifi>=2024.0  # macOS 冻结包无系统 CA 路径，https（酷我搜索等）需显式指定证书包
 PyInstaller>=6.0

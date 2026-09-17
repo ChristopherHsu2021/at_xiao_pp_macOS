@@ -195,6 +195,19 @@ def _ensure_qt_conf(app_dir: Path) -> None:
         print(f"wrote qt.conf -> {t} (Prefix={prefix})")
 
 
+def _verify_multimedia_plugins(app_dir: Path) -> None:
+    """校验 QtMultimedia 后端插件已打进包（缺失 = QMediaPlayer 静默无声）。"""
+    plugins_root = app_dir / "Contents" / "MacOS" / "PyQt6" / "Qt6" / "plugins"
+    multimedia = plugins_root / "multimedia"
+    if not multimedia.is_dir() or not any(multimedia.iterdir()):
+        raise RuntimeError(
+            "QtMultimedia 后端插件（plugins/multimedia/，AVFoundation 后端）未打进 .app！"
+            "这将导致音乐播放彻底无声。请检查 PyInstaller 的 hook-PyQt6.QtMultimedia 是否生效。"
+        )
+    names = [f.name for f in sorted(multimedia.iterdir())]
+    print(f"multimedia 后端插件已就位：{names}")
+
+
 def build_app() -> Path:
     _pyinstaller(ROOT / "build.spec", True)
     app = DIST / "AT小PP.app"
@@ -202,6 +215,7 @@ def build_app() -> Path:
         raise FileNotFoundError(f"未生成应用包：{app}")
     _prune_app(app)
     _ensure_qt_conf(app)
+    _verify_multimedia_plugins(app)
     _codesign(app)
     return app
 

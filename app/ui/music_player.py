@@ -4,6 +4,7 @@ import os
 import random
 import re
 import shutil
+import sys
 import threading
 import ctypes
 from ctypes import wintypes
@@ -1657,10 +1658,22 @@ class GradientLyricLabel(QWidget):
         self._text = _marked_lyric(text)
         self._progress = max(0.0, min(1.0, float(progress)))
         self.update()
+        self._repaint_host_window()
 
     def set_font_size(self, size):
         self._font_size = max(16, min(46, int(size)))
         self.update()
+        self._repaint_host_window()
+
+    def _repaint_host_window(self):
+        """强制整个顶层窗口重绘。
+
+        macOS 半透明（WA_TranslucentBackground）窗口在「局部 update」时可能保留
+        上一帧像素 → 调整字体大小后出现新旧文字叠加的重影。整窗重绘可彻底清底。
+        """
+        win = self.window()
+        if win is not None:
+            win.update()
 
     def font_size(self):
         return self._font_size
@@ -1676,7 +1689,9 @@ class GradientLyricLabel(QWidget):
     def paintEvent(self, e):  # noqa: N802
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        p.setCompositionMode(QPainter.CompositionMode.CompositionMode_Source)
+        # 先用 Clear 模式彻底清空本区域（防止 macOS 半透明窗口局部刷新残影），
+        # 再切回 SourceOver 正常绘制。
+        p.setCompositionMode(QPainter.CompositionMode.CompositionMode_Clear)
         p.fillRect(self.rect(), Qt.GlobalColor.transparent)
         p.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceOver)
         text = self._text.strip() or _marked_lyric(_default_lyric())
@@ -2901,6 +2916,9 @@ class MusicPlayer:
         self._remote_download_lock = threading.Lock()
         self._global_space_filter = GlobalMusicSpaceFilter(self)
         self.player.mediaStatusChanged.connect(self._on_status)
+        # 播放失败不再静默：把底层错误打到 stderr（从终端启动时可见），便于定位
+        # macOS 上「播放无声/失效」这类问题（如多媒体后端插件缺失、格式不支持）。
+        self.player.errorOccurred.connect(self._on_media_error)
         self._apply_player_loops()
         self.set_volume(config.settings.get("volume", DEFAULT_MUSIC_VOLUME))
         self.refresh_tracks()
@@ -2919,6 +2937,13 @@ class MusicPlayer:
         if self.audio.device() != device:
             self.audio.setDevice(device)
         self.audio.setVolume(0 if getattr(self, "_muted", False) else getattr(self, "_volume", DEFAULT_MUSIC_VOLUME) / 100.0)
+
+    def _on_media_error(self, error, error_string):
+        """QMediaPlayer 底层错误日志（macOS 上排查播放失效的关键线索）。"""
+        try:
+            print(f"[music] QMediaPlayer error {error}: {error_string}", file=sys.stderr, flush=True)
+        except Exception:  # noqa: BLE001
+            pass
 
     def _apply_player_loops(self):
         loops = QMediaPlayer.Loops.Infinite if self.loop == 1 else QMediaPlayer.Loops.Once

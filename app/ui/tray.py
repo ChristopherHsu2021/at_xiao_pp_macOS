@@ -66,7 +66,7 @@ class TrayManager(QSystemTrayIcon):
         self.timer_a = QAction("⏱️ " + tr("计时"), menu)
         self.timer_a.triggered.connect(lambda: self.ctx.open_timer())
 
-        self.alarm_a = QAction("⏰ " + tr("闹钟"), menu)
+        self.alarm_a = QAction("⏰️ " + tr("闹钟"), menu)
         self.alarm_a.triggered.connect(lambda: self.ctx.open_alarm())
 
         # 语言子菜单：标题按当前语言显示为“🌐 汉/漢”或“🌐 Eng.”
@@ -251,7 +251,7 @@ class TrayManager(QSystemTrayIcon):
         current = config.settings.get("language", "zh-CN")
         self.todo_a.setText("📋 " + tr("待办"))
         self.timer_a.setText("⏱️ " + tr("计时"))
-        self.alarm_a.setText("⏰ " + tr("闹钟"))
+        self.alarm_a.setText("⏰️ " + tr("闹钟"))
         self.set_a.setText("⚙️ " + tr("设置"))
         self.quit_app_action.setText("🚪 " + tr("退出"))
         self.language_menu.setTitle(self._lang_menu_title())

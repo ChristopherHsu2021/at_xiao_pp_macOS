@@ -205,7 +205,7 @@ def build_menu(parent):
 
     menu.addSeparator()
 
-    for icon, label, kind in [("📋", "待办", "todo"), ("⏰", "闹钟", "alarm"),
+    for icon, label, kind in [("📋", "待办", "todo"), ("⏰️", "闹钟", "alarm"),
                               ("⏱️", "计时", "timer"), ("👻", "隐身", "hide"),
                               ("⚙️", "设置", "settings"), ("🚪", "退出", "exit")]:
         menu.addAction(_action(menu, f"{icon}  {tr(label)}", {"kind": kind}))
