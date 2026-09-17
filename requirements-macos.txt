@@ -1,0 +1,9 @@
+# AT小PP · macOS 运行/打包依赖
+# 与 Windows requirements.txt 的差异：去掉仅 Windows 可用的 comtypes；
+# 新增 audioop-lts（Python 3.13 已移除标准库 audioop，voice 模块依赖它）。
+PyQt6>=6.6
+pycryptodome>=3.20
+opencc-python-reimplemented>=0.1.7
+pypinyin>=0.50
+audioop-lts>=0.2
+PyInstaller>=6.0
