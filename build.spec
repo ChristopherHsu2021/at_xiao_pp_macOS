@@ -42,6 +42,12 @@ if IS_MAC:
         "librosa", "scipy", "numba", "llvmlite", "onnxruntime",
         "transformers", "gradio", "fastapi", "uvicorn",
     ]
+    # PyObjC：AVFoundation 后端（macOS 原生音频）需要被 PyInstaller 收集进包。
+    # objc 桥接 + Foundation + AVFoundation 三个包都是 Python 桥接层（纯 Python + C 扩展），
+    # 它们运行期桥接到系统自带的 AVFoundation.framework（无需打包系统框架）。
+    hiddenimports += collect_submodules("objc")
+    hiddenimports += collect_submodules("Foundation")
+    hiddenimports += collect_submodules("AVFoundation")
 else:
     hiddenimports += (
         ["winreg"]

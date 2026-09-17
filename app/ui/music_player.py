@@ -1,4 +1,9 @@
-"""音乐播放器：QMediaPlayer 后端，支持本地/缓存/在线歌曲的播放、搜索和上传。"""
+"""音乐播放器：支持本地/缓存/在线歌曲的播放、搜索和上传。
+
+音频后端走 app/core/audio_backend 抽象：
+- macOS 用系统原生 AVFoundation (AVAudioPlayer)，绕开 QtMultimedia 打包后无声的坑；
+- 其它平台沿用 PyQt6.QtMultimedia.QMediaPlayer。
+业务层（进度条/歌词/播放列表）无需感知差异。"""
 
 import os
 import random
@@ -33,6 +38,16 @@ except ImportError:  # pragma: no cover
 
 from app.core import assets, config, covers, lyrics, music_api
 from app.core import audio_meta
+from app.core.audio_backend import create_audio_backend
+
+# macOS 使用系统原生 AVFoundation 后端（见 app/core/audio_backend.py），
+# 彻底绕开 PyQt6.QtMultimedia 在打包 .app 中后端插件 @rpath 解析失败的坑；
+# 其它平台继续用 QMediaPlayer（行为不变）。
+IS_MAC = sys.platform == "darwin"
+if IS_MAC:
+    # 仅 macOS 下才存在这两个符号（audio_backend 模块内定义于 if IS_MAC 块），
+    # 避免 Windows 端 import 本模块时因找不到符号而 ImportError。
+    from app.core.audio_backend import AVAudioBackend, _MacAudioShim
 from app.core.voice import say
 from app.core.i18n import tr
 from app.ui.context_menu import MENU_QSS
@@ -347,26 +362,32 @@ def _parse_duration(path: str) -> str:
                 return f"{s // 60:02d}:{s % 60:02d}"
     except Exception:  # noqa: BLE001
         pass
-    # 回退：audio_meta 未覆盖的格式（如 ogg / ape 等）仍用 QMediaPlayer 探测一次，
-    # 仅这类个别文件会有开销，不影响整体流畅度。
+    # 回退：audio_meta 未覆盖的格式（如 ogg / ape 等）探测一次。
+    # macOS 用原生 AVAudioPlayer（duration 在加载后即可同步拿到，无需事件循环）；
+    # 其它平台沿用 QMediaPlayer 探测。仅这类个别文件有开销，不影响整体流畅度。
     try:
         if not os.path.exists(path):
             return "--:--"
-        probe = QMediaPlayer()
-        loop = QEventLoop()
-        state = {"ms": 0}
+        if IS_MAC:
+            probe = AVAudioBackend()
+            probe.setSource(QUrl.fromLocalFile(path))
+            ms = probe.duration()
+        else:
+            probe = QMediaPlayer()
+            loop = QEventLoop()
+            state = {"ms": 0}
 
-        def on_dur(ms):
-            state["ms"] = ms
-            if ms > 0:
-                loop.quit()
+            def on_dur(ms):
+                state["ms"] = ms
+                if ms > 0:
+                    loop.quit()
 
-        probe.durationChanged.connect(on_dur)
-        probe.setSource(QUrl.fromLocalFile(path))
-        QTimer.singleShot(500, loop.quit)
-        loop.exec()
-        ms = state["ms"] or probe.duration()
-        if ms > 0:
+            probe.durationChanged.connect(on_dur)
+            probe.setSource(QUrl.fromLocalFile(path))
+            QTimer.singleShot(500, loop.quit)
+            loop.exec()
+            ms = state["ms"] or probe.duration()
+        if ms and ms > 0:
             s = ms // 1000
             return f"{s // 60:02d}:{s % 60:02d}"
     except Exception:  # noqa: BLE001
@@ -2897,12 +2918,18 @@ class PlayerWindow(QDialog):
 class MusicPlayer:
     def __init__(self, ctx):
         self.ctx = ctx
-        self.player = QMediaPlayer()
-        self._media_devices = QMediaDevices()
-        self.audio = QAudioOutput()
-        self._apply_default_audio_output()
-        self._media_devices.audioOutputsChanged.connect(self._apply_default_audio_output)
-        self.player.setAudioOutput(self.audio)
+        if IS_MAC:
+            # macOS：系统原生 AVFoundation 后端，避免 QtMultimedia 打包后无声
+            self.player = create_audio_backend()  # -> AVAudioBackend
+            self.audio = _MacAudioShim(self.player)
+            self._apply_default_audio_output()
+        else:
+            self.player = QMediaPlayer()
+            self._media_devices = QMediaDevices()
+            self.audio = QAudioOutput()
+            self._apply_default_audio_output()
+            self._media_devices.audioOutputsChanged.connect(self._apply_default_audio_output)
+            self.player.setAudioOutput(self.audio)
         self.tracks = []
         self.index = 0
         self.favorite_mode = False
@@ -2933,6 +2960,10 @@ class MusicPlayer:
         self._singer_show_active = False
 
     def _apply_default_audio_output(self):
+        if IS_MAC:
+            # AVAudioPlayer 由系统自动选择默认输出设备，无需 QMediaDevices
+            self.audio.setVolume(0 if getattr(self, "_muted", False) else getattr(self, "_volume", DEFAULT_MUSIC_VOLUME) / 100.0)
+            return
         device = QMediaDevices.defaultAudioOutput()
         if hasattr(device, "isNull") and device.isNull():
             return
@@ -3562,6 +3593,9 @@ class MusicPlayer:
         若不等待就删除会出现「正被另一进程使用」而失败。轮询媒体状态直到
         NoMedia/InvalidMedia（或超时），避免随后删除被占用文件。
         """
+        # macOS 下 AVAudioPlayer 在 stop()/setSource 后立即释放文件句柄，无需等待
+        if IS_MAC:
+            return True
         from PyQt6.QtCore import QElapsedTimer
         from PyQt6.QtMultimedia import QMediaPlayer
 

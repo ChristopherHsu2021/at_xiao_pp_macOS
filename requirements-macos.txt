@@ -7,4 +7,7 @@ opencc-python-reimplemented>=0.1.7
 pypinyin>=0.50
 audioop-lts>=0.2
 certifi>=2024.0  # macOS 冻结包无系统 CA 路径，https（酷我搜索等）需显式指定证书包
+# macOS 音乐播放后端：系统原生 AVFoundation（AVAudioPlayer），绕过 QtMultimedia 打包后无声问题。
+# 仅需 AVFoundation 这个 PyObjC 桥接包（会自动拉入 pyobjc-core + pyobjc-framework-Foundation）。
+pyobjc-framework-AVFoundation>=11.0
 PyInstaller>=6.0
