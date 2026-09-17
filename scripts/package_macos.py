@@ -177,29 +177,73 @@ def _prune_app(app_dir: Path) -> None:
         print(f"removed QtPdf framework: {qt_pdf}")
 
 
+def _is_macho_dylib(path: Path) -> bool:
+    """粗略判断文件是否为可被 dlopen 的 Mach-O 动态库（MH_DYLIB）。
+
+    用于在物化 Python 共享库前排除「解释器可执行文件（MH_EXECUTE）」这类
+    无法被 PyInstaller 启动器 dlopen 的文件。无法判定（非 Mach-O / 通用二进制
+    未深究）时放行，避免误杀。
+    """
+    try:
+        with open(path, "rb") as f:
+            magic = f.read(4)
+    except OSError:
+        return False
+    # 通用二进制（FAT）：放行（x86_64 单架构产物通常不是 fat，这里不深究）
+    if magic in (b"\xca\xfe\xba\xbe", b"\xbe\xba\xfe\xca"):
+        return True
+    if magic in (b"\xcf\xfa\xed\xfe", b"\xfe\xed\xfa\xcf"):  # MH_MAGIC_64
+        try:
+            with open(path, "rb") as f:
+                f.seek(12)  # magic(4)+cputype(4)+cpusubtype(4)
+                ft = struct.unpack("<I", f.read(4))[0]
+        except OSError:
+            return False
+        return ft == 0x6  # MH_DYLIB
+    if magic in (b"\xce\xfa\xed\xfe", b"\xfe\xed\xfa\xce"):  # MH_MAGIC (32-bit)
+        try:
+            with open(path, "rb") as f:
+                f.seek(12)
+                ft = struct.unpack("<I", f.read(4))[0]
+        except OSError:
+            return False
+        return ft == 0x6
+    return False
+
+
 def _find_libpython() -> Path | None:
     """定位构建用 Python 的共享库（libpython dylib），用于物化到 bundle。
 
-    框架式 Python：本体是 Python.framework/Versions/x/Python（同时是可 dlopen 的动态库）。
-    非框架（homebrew/pyenv）：本体是 lib/libpython3.x.dylib。
+    框架式 Python：真正的本体是 Python.framework/Versions/x/Python（MH_DYLIB，
+    可被 dlopen 的动态库，PyInstaller 自身也用它）；bin/python3.x 只是解释器
+    可执行文件（MH_EXECUTE），绝不能拿来当 Python 共享库，否则启动器 dlopen 失败。
+    非框架（homebrew/pyenv --enable-shared）：本体是 lib/libpython3.x.dylib。
+
+    候选顺序：框架 dylib 最优先，其次 libpython*.dylib/*.so，最后兜底
+    sys.executable（仅当它“看起来像 dylib”时才采用，否则跳过以免误用可执行文件）。
     """
     prefix = Path(sys.prefix)
     cands: list[Path] = []
-    cands += list(prefix.rglob("libpython*.dylib"))
+    cands.append(prefix / "Python")  # 框架式 dylib —— 首选
+    cands += sorted(
+        prefix.rglob("libpython*.dylib"),
+        key=lambda p: -p.stat().st_size if p.exists() else 0,
+    )
     cands += list(prefix.rglob("libpython*.so"))
     cands.append(Path(os.path.realpath(sys.executable)))
-    cands.append(prefix / "Python")
+
+    # 第一遍：真实文件且确为 dylib
     for c in cands:
         try:
-            if c.exists() and not c.is_symlink():
+            if c.exists() and not c.is_symlink() and _is_macho_dylib(c):
                 return c
         except OSError:
             continue
-    # 回退：允许符号链接，解析其真实目标后再判定
+    # 第二遍：解析软链后再判定
     for c in cands:
         try:
             r = Path(os.path.realpath(c))
-            if r.exists() and not r.is_symlink():
+            if r.exists() and not r.is_symlink() and _is_macho_dylib(r):
                 return r
         except OSError:
             continue
@@ -230,7 +274,14 @@ def _ensure_python_lib(app_dir: Path) -> None:
     if py.is_symlink() or py.exists():
         py.unlink()
     shutil.copy2(src, py)
-    print(f"已物化 Python 共享库 -> {py}（来源 {src}，{py.stat().st_size} 字节）")
+    size = py.stat().st_size
+    if not _is_macho_dylib(py):
+        raise RuntimeError(
+            f"致命：物化后的 Contents/Frameworks/Python 不是可被 dlopen 的 Mach-O 动态库"
+            f"（疑似误用了 MH_EXECUTE 可执行文件，来源 {src}）。该文件无法被 PyInstaller 启动器加载，"
+            f"会导致 [PYI-xxx] Failed to load Python shared library。请修正 _find_libpython 候选顺序。"
+        )
+    print(f"已物化 Python 共享库 -> {py}（来源 {src}，{size} 字节，已校验为 Mach-O dylib）")
 
 
 def _ensure_qt_conf(app_dir: Path) -> None:
