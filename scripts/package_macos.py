@@ -1,22 +1,25 @@
-"""构建 AT小PP 的 macOS 发行包（自定义向导安装器 + .dmg）。
+"""构建 AT小PP 的 macOS 发行包（.dmg 直接含真身 AT小PP.app，无安装/卸载向导）。
 
 流程：
   1. 由 PNG 生成 build_assets/app_icon.icns（仅 macOS 可运行）。
-  2. pyinstaller build.spec            -> dist/AT小PP.app
-  3. 复制 dist/AT小PP.app -> release/AT小PP.app（作为安装器 payload）
-  4. pyinstaller bootstrap.spec        -> dist/AT小PP Installer.app（内嵌 payload）
-  5. 裁剪无用 Qt 翻译 / QtPdf 以减小体积
-  6. 对 .app 做免费自签名（ad-hoc codesign），消除「App 已损坏」类拦截
-  7. hdiutil 打包为 release/AT小PP-macos.dmg（含「安装器」与 Applications 快捷方式）
+  2. pyinstaller build.spec            -> dist/AT小PP.app（真身应用，无控制台黑窗）
+  3. 裁剪无用 Qt 翻译 / QtPdf 以减小体积
+  4. 对 .app 做免费自签名（ad-hoc codesign），消除「App 已损坏」类拦截
+  5. hdiutil 打包为 release/AT小PP-macos.dmg（含 AT小PP.app 与 Applications 快捷方式）
+
+使用方式（类比 Windows「安装到本地」）：
+  - 挂载 .dmg 后，把里面的 AT小PP.app 拖进 /Applications（或 ~/Applications）即可。
+  - 卸载 = 把 AT小PP.app 拖进废纸篓。无需任何向导。
 
 仅在 macOS 上运行；依赖 requirements-macos.txt 与 PyInstaller。
 全程零成本：无需 Apple 付费开发者账号（自签名为本地 ad-hoc，免费）。
 
-兼容性说明：
-  - 默认产出「宿主机架构」的 .app（Apple Silicon 宿主机 -> arm64，Intel 宿主机 -> x86_64）。
-    x86_64 包可在 Apple Silicon 上经 Rosetta 2 运行，因此「在 Intel 宿主机上构建」可覆盖最广。
-  - 加 --universal 可产出 universal2（Intel+Apple Silicon 单包通吃），需宿主机 Python 为
-    universal2 且依赖含通用切片；否则自动回退宿主机架构，不会构建失败。
+兼容性说明（兼容性优先方案）：
+  - 通过环境变量 ATPP_TARGET_ARCH=x86_64 产出 x86_64 包：
+      Intel Mac 原生运行；Apple Silicon Mac 经 Rosetta 2 运行。
+      单个 .dmg 即可覆盖几乎所有 Mac，系统兼容性最强（这也是默认 CI 方案）。
+  - 加 --universal 可尝试产出 universal2（Intel+Apple Silicon 单包通吃），
+    需宿主机 Python 为 universal2 且依赖含通用切片；否则自动回退宿主机架构。
 """
 
 from __future__ import annotations
@@ -165,42 +168,17 @@ def build_app() -> Path:
     return app
 
 
-def build_installer(payload_app: Path) -> Path:
-    RELEASE.mkdir(exist_ok=True)
-    # bootstrap.spec 将 release/AT小PP.app 作为 payload 内嵌
-    dest = RELEASE / "AT小PP.app"
-    if dest.exists():
-        shutil.rmtree(dest, ignore_errors=True)
-    shutil.copytree(payload_app, dest)
-    print(f"payload 已就位：{dest}")
-    _pyinstaller(ROOT / "bootstrap.spec", True)
-    installer = DIST / "AT小PP Installer.app"
-    if not installer.exists():
-        raise FileNotFoundError(f"未生成安装器：{installer}")
-    _prune_app(installer)
-    # --deep 会递归签名内嵌的 payload/AT小PP.app，安装后落到 ~/Applications 即为已签名状态
-    _codesign(installer)
-    return installer
-
-
-def build_dmg(installer_app: Path) -> Path:
+def build_dmg(app_dir: Path) -> Path:
+    """把真正的 AT小PP.app 直接打进 .dmg（拖进 /Applications 即用，无安装向导）。"""
+    RELEASE.mkdir(parents=True, exist_ok=True)
     stage = BUILD / "dmg_stage"
     if stage.exists():
         shutil.rmtree(stage, ignore_errors=True)
     stage.mkdir(parents=True)
-    app_dest = stage / "AT小PP Installer.app"
-    shutil.copytree(installer_app, app_dest)
+    app_dest = stage / "AT小PP.app"
+    shutil.copytree(app_dir, app_dest)
 
-    # 便捷卸载脚本（打开已安装应用的卸载向导）
-    uninstall_sh = stage / "uninstall.command"
-    uninstall_sh.write_text(
-        "#!/bin/bash\n"
-        'open -a "AT小PP" --args --uninstall\n',
-        encoding="utf-8",
-    )
-    uninstall_sh.chmod(0o755)
-
-    # Applications 快捷方式（拖放安装入口）
+    # Applications 快捷方式（拖放安装入口：把 .app 拖进这里即装到 /Applications）
     os.symlink("/Applications", str(stage / "Applications"))
 
     dmg = RELEASE / "AT小PP-macos.dmg"
@@ -249,9 +227,9 @@ def main() -> int:
         ensure_icns()
 
     app = build_app()
-    installer = build_installer(app)
-    dmg = build_dmg(installer)
+    dmg = build_dmg(app)
     print(f"\nmacOS 发行包构建完成：{dmg}")
+    print("使用：挂载 .dmg 后把 AT小PP.app 拖进 /Applications（或 ~/Applications）即可；卸载 = 拖进废纸篓。")
     if args.universal:
         print("（注：universal2 实际成败取决于 PyQt6/Qt 等依赖是否提供通用切片；"
               "若 .app 仅含单架构，请用 Intel 宿主机构建以获得最广覆盖。）")

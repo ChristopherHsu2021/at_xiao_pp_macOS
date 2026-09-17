@@ -46,7 +46,7 @@ jobs:
       - name: Verify architecture (必须为 x86_64)
         run: |
           echo "=== 应用二进制架构（应为 x86_64）==="
-          lipo -info "release/AT小PP.app/Contents/MacOS/AT小PP" || true
+          lipo -info "dist/AT小PP.app/Contents/MacOS/AT小PP" || true
           echo "=== dmg 产物 ==="
           ls -lh release/AT小PP-macos.dmg
 
