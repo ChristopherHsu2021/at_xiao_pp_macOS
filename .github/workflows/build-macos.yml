@@ -1,14 +1,21 @@
 name: Build macOS .dmg
 
+# 触发方式：
+#   1. 手动：仓库 Actions → Build macOS .dmg → Run workflow
+#   2. 推送 main 或打 v* tag 自动触发
 on:
   workflow_dispatch:
   push:
-    tags:
-      - "v*"
+    branches: ["main"]
+    tags: ["v*"]
 
 jobs:
   build-macos:
-    runs-on: macos-latest
+    # 用 Intel 架构 runner 产出 x86_64 包：
+    #   - Intel Mac 原生运行
+    #   - Apple Silicon Mac 经 Rosetta 2 运行
+    # 单个 .dmg 即可覆盖几乎所有 Mac，系统兼容性最强。
+    runs-on: macos-13
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -24,8 +31,15 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements-macos.txt
 
-      - name: Build .dmg
+      - name: Build .dmg (含免费 ad-hoc 自签名，消除「App 已损坏」类拦截)
         run: python scripts/package_macos.py --clean
+
+      - name: Verify architecture
+        run: |
+          echo "=== .app 架构 ==="
+          file "release/AT小PP.app/Contents/MacOS/AT小PP" || true
+          echo "=== dmg 产物 ==="
+          ls -lh release/AT小PP-macos.dmg
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4

@@ -6,9 +6,17 @@
   3. 复制 dist/AT小PP.app -> release/AT小PP.app（作为安装器 payload）
   4. pyinstaller bootstrap.spec        -> dist/AT小PP Installer.app（内嵌 payload）
   5. 裁剪无用 Qt 翻译 / QtPdf 以减小体积
-  6. hdiutil 打包为 release/AT小PP-macos.dmg（含「安装器」与 Applications 快捷方式）
+  6. 对 .app 做免费自签名（ad-hoc codesign），消除「App 已损坏」类拦截
+  7. hdiutil 打包为 release/AT小PP-macos.dmg（含「安装器」与 Applications 快捷方式）
 
 仅在 macOS 上运行；依赖 requirements-macos.txt 与 PyInstaller。
+全程零成本：无需 Apple 付费开发者账号（自签名为本地 ad-hoc，免费）。
+
+兼容性说明：
+  - 默认产出「宿主机架构」的 .app（Apple Silicon 宿主机 -> arm64，Intel 宿主机 -> x86_64）。
+    x86_64 包可在 Apple Silicon 上经 Rosetta 2 运行，因此「在 Intel 宿主机上构建」可覆盖最广。
+  - 加 --universal 可产出 universal2（Intel+Apple Silicon 单包通吃），需宿主机 Python 为
+    universal2 且依赖含通用切片；否则自动回退宿主机架构，不会构建失败。
 """
 
 from __future__ import annotations
@@ -32,6 +40,33 @@ def _run(args: list[str | os.PathLike[str]], cwd: Path = ROOT) -> None:
     printable = " ".join(str(a) for a in args)
     print(f"> {printable}")
     subprocess.run([str(a) for a in args], cwd=str(cwd), check=True)
+
+
+def _python_is_universal() -> bool:
+    """宿主机 Python 是否为 universal2 构建（可产出通用二进制）。"""
+    try:
+        out = subprocess.run(
+            ["file", sys.executable], capture_output=True, text=True
+        ).stdout.lower()
+        return "universal" in out
+    except Exception:
+        return False
+
+
+def _codesign(path: Path) -> None:
+    """免费自签名（ad-hoc）：`codesign --force --deep --sign -`。
+
+    作用：满足 Gatekeeper 对「已签名」的要求，消除「App 已损坏 / 无法验证」类拦截。
+    不花钱、无需 Apple 开发者账号。局限：下载自网络的未公证包首次启动仍可能弹「无法确认
+    开发者」——此时右键→打开 或 `xattr -dr com.apple.quarantine` 一次即可（本地拷贝无此问题）。
+    """
+    print(f"codesign (ad-hoc): {path}")
+    subprocess.run(
+        ["codesign", "--force", "--deep", "--sign", "-", str(path)],
+        check=False,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
 
 
 def ensure_icns() -> None:
@@ -82,6 +117,7 @@ def build_app() -> Path:
     if not app.exists():
         raise FileNotFoundError(f"未生成应用包：{app}")
     _prune_app(app)
+    _codesign(app)
     return app
 
 
@@ -98,6 +134,8 @@ def build_installer(payload_app: Path) -> Path:
     if not installer.exists():
         raise FileNotFoundError(f"未生成安装器：{installer}")
     _prune_app(installer)
+    # --deep 会递归签名内嵌的 payload/AT小PP.app，安装后落到 ~/Applications 即为已签名状态
+    _codesign(installer)
     return installer
 
 
@@ -131,6 +169,8 @@ def build_dmg(installer_app: Path) -> Path:
         "-ov", "-format", "UDZO",
         str(dmg),
     ])
+    # 对 .dmg 也做自签名，进一步降低挂载时的拦截
+    _codesign(dmg)
     print(f"已生成安装包：{dmg}")
     return dmg
 
@@ -139,12 +179,27 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Build AT小PP macOS installer (.dmg).")
     parser.add_argument("--clean", action="store_true", help="强制完整重建")
     parser.add_argument("--skip-assets", action="store_true", help="复用已有 app_icon.icns")
+    parser.add_argument(
+        "--universal", action="store_true",
+        help="产出通用二进制 universal2（Intel+Apple Silicon）。需宿主机 Python 为 universal2 且依赖含通用切片。",
+    )
     args = parser.parse_args()
 
     if sys.platform != "darwin":
         print("错误：本脚本只能在 macOS 上运行（PyInstaller 无法跨平台编译 .app/.dmg）。", file=sys.stderr)
-        print("提示：可在 macOS 本机执行，或用仓库内 .github/workflows/build-macos.yml 在 GitHub macOS Runner 上自动产出 .dmg。", file=sys.stderr)
+        print("提示：请在 macOS 本机（或 macOS 虚拟机）中执行本脚本，全程免费、无需 GitHub 配额。", file=sys.stderr)
         return 2
+
+    if args.universal:
+        if not _python_is_universal():
+            print(
+                "警告：当前 Python 不是 universal2 构建，无法产出通用二进制；"
+                "将回退为宿主机架构（仍可用）。若需 universal2，请改用 python.org 的 universal2 安装包。",
+                file=sys.stderr,
+            )
+        else:
+            os.environ["ATPP_TARGET_ARCH"] = "universal2"
+            print("已启用 universal2 通用二进制构建。")
 
     if not args.skip_assets:
         ensure_icns()
@@ -153,6 +208,9 @@ def main() -> int:
     installer = build_installer(app)
     dmg = build_dmg(installer)
     print(f"\nmacOS 发行包构建完成：{dmg}")
+    if args.universal:
+        print("（注：universal2 实际成败取决于 PyQt6/Qt 等依赖是否提供通用切片；"
+              "若 .app 仅含单架构，请用 Intel 宿主机构建以获得最广覆盖。）")
     return 0
 
 

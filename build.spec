@@ -14,6 +14,12 @@ from PyInstaller.utils.hooks import collect_data_files, collect_submodules
 
 IS_MAC = sys.platform == "darwin"
 
+# 目标架构：默认跟随宿主机（最稳、零额外依赖）。
+# 设置环境变量 ATPP_TARGET_ARCH=universal2 可产出通用二进制（Intel + Apple Silicon 通吃），
+# 前提：宿主机 Python 为 universal2 构建，且所用依赖（PyQt6/Qt 等）含通用切片。
+# 若依赖仅为单架构，则保持默认（跳过 universal2）以免构建失败。
+ATPP_TARGET_ARCH = os.environ.get("ATPP_TARGET_ARCH") or None
+
 block_cipher = None
 release_assets = os.path.join("build_assets", "optimized_assets")
 assets_source = release_assets if os.path.isdir(release_assets) else "assets"
@@ -97,7 +103,7 @@ if IS_MAC:
         upx=True,
         console=False,
         icon="build_assets/app_icon.icns",
-        target_arch=None,
+        target_arch=ATPP_TARGET_ARCH,
         codesign_identity=None,
         entitlements_file=None,
     )
