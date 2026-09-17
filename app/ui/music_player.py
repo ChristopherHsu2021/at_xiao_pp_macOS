@@ -30,7 +30,7 @@ from PyQt6.QtWidgets import (
     QLineEdit, QHBoxLayout, QVBoxLayout, QFileDialog, QGraphicsDropShadowEffect, QMenu,
     QSizePolicy, QTextEdit, QPlainTextEdit, QComboBox, QAbstractSpinBox,
 )
-from PyQt6.QtGui import QBitmap, QColor, QFont, QLinearGradient, QPainter, QPainterPath, QPen, QPixmap, QPolygon, QRegion
+from PyQt6.QtGui import QBitmap, QColor, QFont, QImage, QLinearGradient, QPainter, QPainterPath, QPen, QPixmap, QPolygon, QRegion
 try:
     from PyQt6.QtSvg import QSvgRenderer
 except ImportError:  # pragma: no cover
@@ -1677,14 +1677,25 @@ class GradientLyricLabel(QWidget):
         super().keyPressEvent(e)
 
     def set_text(self, text, progress=0.0):
-        self._text = _marked_lyric(text)
-        self._progress = max(0.0, min(1.0, float(progress)))
-        self.update()
+        text = _marked_lyric(text)
+        progress = max(0.0, min(1.0, float(progress)))
+        if text == self._text and progress == self._progress:
+            # 内容未变不重绘：sync() 每 250ms 被调用一次，暂停/歌词未推进时
+            # 减少半透明窗口的无谓重绘（每次重绘都是一次残影风险窗口）
+            return
+        self._text = text
+        self._progress = progress
+        # repaint() 同步立即重绘；macOS 半透明 layer-backed 窗口上 update() 的
+        # 异步脏区合并可能让中间帧/旧帧参与合成，同步绘制更确定
+        self.repaint()
         self._repaint_host_window()
 
     def set_font_size(self, size):
-        self._font_size = max(16, min(46, int(size)))
-        self.update()
+        size = max(16, min(46, int(size)))
+        if size == self._font_size:
+            return
+        self._font_size = size
+        self.repaint()
         self._repaint_host_window()
 
     def _repaint_host_window(self):
@@ -1701,24 +1712,27 @@ class GradientLyricLabel(QWidget):
         return self._font_size
 
     def set_accent(self, color):
-        if color.isValid():
+        if color.isValid() and QColor(color) != self._accent:
             self._accent = QColor(color)
-            self.update()
+            self.repaint()
 
     def accent(self):
         return QColor(self._accent)
 
     def paintEvent(self, e):  # noqa: N802
-        p = QPainter(self)
-        p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        # 先用 Clear 模式彻底清空本区域（防止 macOS 半透明窗口局部刷新残影），
-        # 再切回 SourceOver 正常绘制。
-        p.setCompositionMode(QPainter.CompositionMode.CompositionMode_Clear)
-        p.fillRect(self.rect(), Qt.GlobalColor.transparent)
-        p.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceOver)
+        # 离屏整帧渲染：先画到一张全新的 QImage（绝无旧帧），再用 Source 合成模式
+        # 整体替换本控件区域像素。背景（run#10 修复）：macOS Qt6 layer-backed +
+        # WA_TranslucentBackground 半透明窗口上，「Clear 擦底 + SourceOver 画字」
+        # 擦不净 backing store 残留，调歌词(L+/L-)/调字号后旧帧文字与新字叠加成重影。
+        # CompositionMode_Source 的 drawImage 不与旧帧做 SourceOver 叠加，而是逐像素
+        # 替换（含透明像素），上一帧像素根本不参与本帧合成——重影失去存在前提。
         text = self._text.strip() or _marked_lyric(_default_lyric())
         font = QFont(PRIMARY_FONT, self._font_size)
         font.setWeight(QFont.Weight.DemiBold)
+        img = QImage(self.size(), QImage.Format.Format_ARGB32_Premultiplied)
+        img.fill(Qt.GlobalColor.transparent)
+        p = QPainter(img)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
         p.setFont(font)
         metrics = p.fontMetrics()
         max_width = max(20, self.width() - 24)
@@ -1743,17 +1757,21 @@ class GradientLyricLabel(QWidget):
         p.setPen(Qt.PenStyle.NoPen)
         p.setBrush(QColor("#ffffff"))
         p.drawPath(text_path)
-        if self._progress <= 0:
-            p.restore()
-            return
-        grad = QLinearGradient(0, 0, self.width(), 0)
-        grad.setColorAt(0.0, self._accent)
-        grad.setColorAt(0.68, QColor("#ffb25a"))
-        grad.setColorAt(1.0, QColor("#ffffff"))
-        p.setClipRect(visible_rect.intersected(QRectF(x, 0, text_width * self._progress, self.height())))
-        p.setBrush(grad)
-        p.drawPath(text_path)
+        if self._progress > 0:
+            grad = QLinearGradient(0, 0, self.width(), 0)
+            grad.setColorAt(0.0, self._accent)
+            grad.setColorAt(0.68, QColor("#ffb25a"))
+            grad.setColorAt(1.0, QColor("#ffffff"))
+            p.setClipRect(visible_rect.intersected(QRectF(x, 0, text_width * self._progress, self.height())))
+            p.setBrush(grad)
+            p.drawPath(text_path)
         p.restore()
+        p.end()
+        out = QPainter(self)
+        # Source 模式整体替换本区域像素（透明像素同样替换），不与旧帧叠加
+        out.setCompositionMode(QPainter.CompositionMode.CompositionMode_Source)
+        out.drawImage(0, 0, img)
+        out.end()
 
 
 class LyricOverlayWindow(QDialog):
@@ -1782,6 +1800,17 @@ class LyricOverlayWindow(QDialog):
         self._apply_scale()
         music.player.positionChanged.connect(self.sync)
         music.player.playbackStateChanged.connect(self.sync)
+
+    def paintEvent(self, e):  # noqa: N802
+        # 第二重保险：半透明悬浮窗每帧先丢弃上一帧整帧像素，防止 macOS
+        # layer-backed 窗口局部更新时旧帧从歌词/按钮区域外透出（残影）。
+        # 本窗口背景即透明（全局 QSS QDialog{background:transparent}），
+        # 清空后不补画背景，与原视觉完全一致。
+        super().paintEvent(e)
+        p = QPainter(self)
+        p.setCompositionMode(QPainter.CompositionMode.CompositionMode_Clear)
+        p.fillRect(self.rect(), Qt.GlobalColor.transparent)
+        p.end()
 
     def _build(self):
         root = QVBoxLayout(self)
