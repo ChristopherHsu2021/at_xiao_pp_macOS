@@ -12,37 +12,41 @@ on:
 jobs:
   build-macos:
     # macos-13 (Intel) 已于 2025-12-04 退役，钉住它的任务会永远排队。
-    # 改用 macos-15 (Apple Silicon) + Rosetta 2 交叉编译，产出 x86_64 包：
+    # 改用 macos-15 (Apple Silicon) 作为运行机，但**全程用 arch -x86_64 包裹构建**，
+    # 让 Python 进程以 x86_64 身份运行（走 Rosetta 2），从而产出 x86_64 包：
     #   - Intel Mac 原生运行
     #   - Apple Silicon Mac 经 Rosetta 2 运行
     # 单个 .dmg 即可覆盖几乎所有 Mac，系统兼容性最强。
+    # 注意：actions/setup-python 的 architecture: x64 在 macOS 上是空操作（仍装 arm64 Python），
+    # 因此必须在构建命令外再包一层 arch -x86_64，否则会产出 arm64 包（Intel 机报 bad CPU type）。
     runs-on: macos-15
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install Rosetta 2 (交叉编译 x86_64 必需)
+      - name: Install Rosetta 2 (x86_64 交叉编译必需)
         run: softwareupdate --install-rosetta --agree-to-license
 
-      - name: Set up Python 3.13 (x86_64 版本，经 Rosetta 2 运行)
+      - name: Set up Python 3.13
         uses: actions/setup-python@v5
         with:
           python-version: "3.13"
-          architecture: "x64"
-          cache: pip
 
-      - name: Install dependencies
+      - name: Build x86_64 .dmg (venv+依赖+PyInstaller 全程 arch -x86_64)
+        env:
+          ATPP_TARGET_ARCH: x86_64
         run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements-macos.txt
+          arch -x86_64 bash -c '
+            set -e
+            python -m pip install --upgrade pip
+            pip install -r requirements-macos.txt
+            python scripts/package_macos.py --clean
+          '
 
-      - name: Build .dmg (含免费 ad-hoc 自签名，消除「App 已损坏」类拦截)
-        run: python scripts/package_macos.py --clean
-
-      - name: Verify architecture
+      - name: Verify architecture (必须为 x86_64)
         run: |
-          echo "=== .app 架构（应为 x86_64）==="
-          file "release/AT小PP.app/Contents/MacOS/AT小PP" || true
+          echo "=== 应用二进制架构（应为 x86_64）==="
+          lipo -info "release/AT小PP.app/Contents/MacOS/AT小PP" || true
           echo "=== dmg 产物 ==="
           ls -lh release/AT小PP-macos.dmg
 
