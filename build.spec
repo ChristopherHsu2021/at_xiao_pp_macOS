@@ -90,15 +90,13 @@ if not IS_MAC:
 a = Analysis(["main.py"], **analysis_kwargs)
 
 if IS_MAC:
-    # PyInstaller 的 hook-PyQt6.QtMultimedia 只收 Python 绑定与 multimedia 插件，
-    # 不收插件依赖的 Qt6Multimedia 动态库（libQt6Multimedia*.dylib）。
-    # 注意：collect_dynamic_libs("PyQt6.QtMultimedia") 对本环境会报
-    #   "skipping library collection ... as it is not a package" / "not enough values to unpack"
-    # 因为 PyQt6.QtMultimedia 是 .abi3.so 模块而非包 -> 收集失败 -> 播放无声。
-    # 改法：显式 glob PyQt6/Qt6/lib 下的全部 libQt6*.dylib，直接加入 a.binaries，
-    # 并保留 PyInstaller 原生相对路径（PyQt6/Qt6/lib/...），这样 COLLECT 阶段会把它
-    # 放到 Contents/Frameworks/PyQt6/Qt6/lib/，darwinmedia 后端插件经 @rpath 即可找到
-    # Qt6Multimedia -> 音乐播放真正出声。与成功收集 Qt6Core/QtGui 同一落地路径。
+    # macOS 上 PyQt6 以 .framework 形式提供 Qt6 库（如 Qt6Core.framework、Qt6Multimedia.framework），
+    # 而非扁平 libQt6*.dylib。本环境即属此形态，故必须显式收集 framework。
+    # 用 PyInstaller 的 BINARY TOC 形式（dest 含 framework 内主 dylib 名）加入 a.binaries，
+    # COLLECT 阶段会把整个 <fw>.framework 目录落到 Contents/Frameworks/PyQt6/Qt6/lib/，
+    # darwinmedia 后端插件经 @rpath（含 PyQt6/Qt6/lib）即可命中 Qt6Multimedia -> 播放出声。
+    # 同时兼容扁平 libQt6*.dylib 形态（部分环境），以及去版本号（libQt6Multimedia.6.dylib）。
+    # package_macos.py 另有一份 post-build copytree 兜底，二者任一生效即可。
     try:
         import PyQt6
         from pathlib import Path as _P
@@ -110,25 +108,29 @@ if IS_MAC:
             _src = _P(_qc.__file__).resolve().parent / "Qt6" / "lib"
         if _src.is_dir():
             _added = []
-            for _d in _src.glob("libQt6*.dylib"):
-                if not _d.is_file():
-                    continue
-                # 插件按标准名 @rpath/libQt6Multimedia.dylib 引用 -> 去版本号化
-                # （系统/brew 形态可能是 libQt6Multimedia.6.dylib，统一落为标准名）
-                _dest = _d.name
-                if _dest.endswith(".6.dylib"):
-                    _dest = _dest[: -len(".6.dylib")] + ".dylib"
-                _rel = f"PyQt6/Qt6/lib/{_dest}"
-                a.binaries += [(_rel, str(_d), "BINARY")]
-                _added.append(_rel)
+            for _ent in sorted(_src.iterdir()):
+                if _ent.name.startswith("Qt6") and _ent.name.endswith(".framework") and _ent.is_dir():
+                    # framework 主 dylib：Qt6Multimedia.framework/Qt6Multimedia
+                    _main = _ent / _ent.name[: -len(".framework")]
+                    if _main.exists():
+                        _rel = f"PyQt6/Qt6/lib/{_ent.name}/{_main.name}"
+                        a.binaries += [(_rel, str(_main), "BINARY")]
+                        _added.append(_rel)
+                elif _ent.name.startswith("libQt6") and _ent.name.endswith(".dylib") and _ent.is_file():
+                    _dest = _ent.name
+                    if _dest.endswith(".6.dylib"):
+                        _dest = _dest[: -len(".6.dylib")] + ".dylib"
+                    _rel = f"PyQt6/Qt6/lib/{_dest}"
+                    a.binaries += [(_rel, str(_ent), "BINARY")]
+                    _added.append(_rel)
             if _added:
-                print(f"[build.spec] 已显式收集 Qt6 动态库 {len(_added)} 个（含 Multimedia 后端依赖）：{', '.join(_added)}")
+                print(f"[build.spec] 已显式收集 Qt6 库 {len(_added)} 项（含 Multimedia 后端依赖）：{', '.join(_added)}")
             else:
-                print(f"[build.spec] 警告：{_src} 下未找到 libQt6*.dylib")
+                print(f"[build.spec] 警告：{_src} 下未找到 Qt6 框架/动态库（由 package_macos.py 兜底）")
         else:
-            print("[build.spec] 警告：未定位到 PyQt6 的 Qt6/lib 目录，跳过 Qt 动态库收集")
+            print("[build.spec] 警告：未定位到 PyQt6 的 Qt6/lib 目录，跳过 Qt 动态库收集（由 package_macos.py 兜底）")
     except Exception as e:
-        print(f"[build.spec] 收集 Qt6 动态库失败：{e}")
+        print(f"[build.spec] 收集 Qt6 动态库失败（由 package_macos.py 兜底）：{e}")
 
 pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 

@@ -331,14 +331,14 @@ def _qt6_lib_has_multimedia(lib_dir: Path) -> bool:
 
 
 def _find_qt6_lib() -> Path | None:
-    """定位 PyQt6 自带的 Qt6 库目录（含 libQt6*.dylib 扁平文件，或 Qt6*.framework 目录）。
+    """定位 PyQt6 自带的 Qt6 库目录（macOS 为 Qt6*.framework 目录；部分环境为扁平 libQt6*.dylib）。
 
-    关键修复：上一版以「目录下是否含 libQt6Multimedia.dylib」作为命中条件，但本 CI 环境
-    的 PyQt6 安装里多媒体动态库可能恰好未被 PyInstaller 收录，导致 _find_qt6_lib 返回 None
-    —— 进而 _ensure_qt_frameworks 完全跳过补全、_verify_multimedia_plugins 致命失败。
-    改为以「libQt6Core.dylib 必存在」（Qt6Core 已成功进包可佐证）为锚点定位源目录，
-    之后由 _ensure_qt_frameworks 把整目录 libQt6*.dylib 全量补进 bundle（含 multimedia）。
-    亦兼容 .framework 形态（只要根下能找到 libQt6Core 即可）。
+    关键修复：本环境 PyQt6 以 .framework 形式提供 Qt6 库（如 Qt6Core.framework），
+    不存在 libQt6Core.dylib 扁平文件。上一版以 libQt6Core.dylib 为锚点 -> 返回 None ->
+    _ensure_qt_frameworks 整体跳过补全 -> Qt6Multimedia.framework 未进包 -> 播放无声。
+    改为以「Qt6Core.framework 目录 或 libQt6Core.dylib 文件」任一存在即认定源目录，
+    两种形态都兼容；再由 _ensure_qt_frameworks 把整目录 Qt6*.framework / libQt6*.dylib
+    全量补进 bundle（覆盖多媒体后端依赖）。
     """
     anchors: list[str] = []
     try:
@@ -365,18 +365,32 @@ def _find_qt6_lib() -> Path | None:
         if ra and ra not in seen:
             seen.add(ra)
             dirs.append(ra)
-    # 直接命中：含 libQt6Core.dylib（已知必存在）即认定为源 Qt6 库目录
+
+    def _is_qt6_lib_dir(d: str) -> bool:
+        if not os.path.isdir(d):
+            return False
+        try:
+            names = os.listdir(d)
+        except OSError:
+            return False
+        return any(
+            (n.startswith("Qt6") and n.endswith(".framework") and os.path.isdir(os.path.join(d, n)))
+            or (n.startswith("libQt6") and n.endswith(".dylib") and os.path.isfile(os.path.join(d, n)))
+            for n in names
+        )
+
+    # 直接命中：含 Qt6Core.framework 目录 或 libQt6Core.dylib 文件即认定
     for d in dirs:
-        if os.path.isdir(d) and os.path.isfile(os.path.join(d, "libQt6Core.dylib")):
+        if _is_qt6_lib_dir(d):
             return Path(d)
-    # 兜底：rglob 全树（限深，避免卡死）找含 libQt6Core.dylib 的目录
+    # 兜底：rglob 全树（限深，避免卡死）找含 Qt6 库的目录
     for d in dirs:
         try:
             for root, sub, _files in os.walk(d):
                 if root.count(os.sep) - d.count(os.sep) > 6:
                     sub[:] = []
                     continue
-                if os.path.isfile(os.path.join(root, "libQt6Core.dylib")):
+                if _is_qt6_lib_dir(root):
                     return Path(root)
         except Exception:
             continue
@@ -384,14 +398,17 @@ def _find_qt6_lib() -> Path | None:
 
 
 def _ensure_qt_frameworks(app_dir: Path) -> None:
-    """把 PyQt6 的 Qt6 动态库全量补进 bundle（.framework 或扁平 libQt6*.dylib 两种形态都处理）。
+    """把 PyQt6 的 Qt6 动态库（含 Qt6Multimedia）全量补进 bundle 的每一份 Qt6 树。
 
-    背景：PyInstaller 的 PyQt6.QtMultimedia hook 漏收插件依赖的 Qt6Multimedia 动态库 ->
-    darwinmedia 后端插件 dlopen 失败 -> 'No QtMultimedia backends found' -> 播放无声。
-    build.spec 已在 PyInstaller 阶段显式收集全部 libQt6*.dylib；此处为兜底：若 PyInstaller
-    仍漏收（或只收进多份 Qt6 树中的一份），则从 PyQt6 安装位置补全，且【逐根复制】
-    （覆盖 Frameworks/Resources 多份 Qt6 树，任一份缺都补上）。复制范围 = 整目录
-    libQt6*.dylib + Qt6*.framework（两种形态都处理），确保多媒体后端依赖齐全。
+    形态兼容：macOS 上 PyQt6 以 Qt6*.framework 目录提供（如 Qt6Multimedia.framework）；
+    部分环境为扁平 libQt6*.dylib。两种都处理（framework 用 copytree 整目录复制）。
+
+    为何需要：PyInstaller 的 hook-PyQt6.QtMultimedia 虽调用 add_qt6_dependencies 收集框架，
+    但在本环境的最终 bundle 中 Qt6Multimedia.framework 时常未落地（依赖解析/去重/打包环节的
+    非确定性），导致 darwinmedia 后端插件 dlopen 失败 -> 'No QtMultimedia backends found' ->
+    播放无声。此处为确定性兜底：从 PyQt6 安装位置把整目录 Qt6*.framework / libQt6*.dylib
+    【逐根复制】到 bundle 内每一份 PyQt6/Qt6/lib（Frameworks/Resources 多份树都覆盖），
+    任一份缺就补。这样 darwinmedia 后端插件经 @rpath 必能命中 Qt6Multimedia -> 出声。
     """
     src_lib = _find_qt6_lib()
     if src_lib is None:
