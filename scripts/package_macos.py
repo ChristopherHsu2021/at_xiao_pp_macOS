@@ -157,13 +157,20 @@ def _qt6_root(app_dir: Path) -> Path | None:
 
 
 def _prune_app(app_dir: Path) -> None:
-    """删除无用的 Qt 翻译与 QtPdf，显著减小 .app 体积。"""
-    qt6 = _qt6_root(app_dir)
-    if qt6 is not None:
-        translations = qt6 / "translations"
-        if translations.exists():
-            shutil.rmtree(translations)
+    """删除无用的 Qt 翻译与 QtPdf，显著减小 .app 体积。
+
+    注意：PyQt6/Qt6 在 bundle 内可能有多份（Frameworks/Resources，可能互为软链）。
+    只删其中一份会让另一份变悬空软链 → 后续 copytree 崩溃。必须全量清理。
+    """
+    for translations in list(app_dir.rglob("PyQt6/Qt6/translations")):
+        try:
+            if translations.is_symlink():
+                translations.unlink()
+            elif translations.is_dir():
+                shutil.rmtree(translations)
             print(f"removed Qt translations: {translations}")
+        except FileNotFoundError:
+            pass  # 已随软链目标一起消失
     qt_pdf = app_dir / "Contents" / "Frameworks" / "QtPdf.framework"
     if qt_pdf.exists():
         shutil.rmtree(qt_pdf)
@@ -239,7 +246,8 @@ def build_dmg(app_dir: Path) -> Path:
         shutil.rmtree(stage, ignore_errors=True)
     stage.mkdir(parents=True)
     app_dest = stage / "AT小PP.app"
-    shutil.copytree(app_dir, app_dest)
+    # ignore_dangling_symlinks=True：Qt 目录可能残留悬空软链，不兜底会整包崩溃
+    shutil.copytree(app_dir, app_dest, ignore_dangling_symlinks=True)
 
     # Applications 快捷方式（拖放安装入口：把 .app 拖进这里即装到 /Applications）
     os.symlink("/Applications", str(stage / "Applications"))
