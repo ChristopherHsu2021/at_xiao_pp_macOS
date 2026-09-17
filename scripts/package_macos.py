@@ -79,6 +79,8 @@ def ensure_icns() -> None:
     if not png.exists():
         print("缺少 assets/app_icon.png，无法生成 icns；请手动放置 build_assets/app_icon.icns")
         return
+    # build_assets/ 被 .gitignore 排除（CI 上不存在），必须先建目录
+    icns.parent.mkdir(parents=True, exist_ok=True)
     tmp = tempfile.mkdtemp(prefix="atpp_iconset_")
     iconset = Path(tmp) / "app.iconset"
     iconset.mkdir()
