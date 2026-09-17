@@ -17,7 +17,7 @@ except ImportError:  # pragma: no cover
 
 from PyQt6.QtCore import (
     QAbstractAnimation, QEasingCurve, QPoint, QPointF, QRect, QRectF, QUrl, QTimer, Qt, QSize, QThread, QObject,
-    QPropertyAnimation, pyqtSignal, QEventLoop, QEvent,
+    QPropertyAnimation, pyqtSignal, QEventLoop, QEvent, QStandardPaths,
 )
 from PyQt6.QtMultimedia import QMediaPlayer, QAudioOutput, QMediaDevices
 from PyQt6.QtWidgets import (
@@ -3929,7 +3929,10 @@ class MusicPlayer:
             self.stop()
 
     def upload(self):
-        start_dir = assets.get_music_folder()
+        # 默认指向系统音乐目录（macOS = ~/Music），而非软件自有的曲库目录
+        start_dir = QStandardPaths.writableLocation(
+            QStandardPaths.StandardLocation.MusicLocation
+        ) or assets.get_music_folder()
         files, _ = QFileDialog.getOpenFileNames(
             None, tr("上传音乐"), start_dir,
             f"{tr('音频文件')} (*.mp3 *.wav *.ogg *.flac *.m4a)"

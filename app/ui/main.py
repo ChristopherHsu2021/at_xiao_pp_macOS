@@ -99,6 +99,7 @@ class App:
         self.scene = None
         self._scene_kind = None
         self._scene_name = None
+        self._completing_scene = False
         self._alarm_text_timer = QTimer()
         self._alarm_text_timer.setInterval(5000)
         self._alarm_text_timer.timeout.connect(self._repeat_alarm_text)
@@ -343,13 +344,28 @@ class App:
     def check_scene_pair(self):
         if self.scene is None or not self.scene.isVisible():
             return
+        # 防止拖拽移动事件高频重复触发（每次 mouseMove 都会调用本方法）
+        if getattr(self, "_completing_scene", False):
+            return
         pet_rect = self.pet.frameGeometry()
         item_rect = self.scene.frameGeometry()
         if pet_rect.intersects(item_rect):
-            self._complete_scene()
+            # 关键修复：本方法在「拖拽宠物」的 mouseMoveEvent 中调用。若同步执行
+            # _complete_scene()，会立即 close() 场景窗、并重建宠物窗子控件——这些都发生在
+            # 鼠标事件派发中途，导致 Qt 的 sendMouseEvent/notify 解引用已销毁的 widget，
+            # 触发 SIGSEGV（KERN_INVALID_ADDRESS，崩溃栈落在 QApplication::notify）。
+            # 故延迟到当前事件派发结束后的下一轮事件循环再执行。
+            self._completing_scene = True
+            QTimer.singleShot(0, self._complete_scene)
 
     def _complete_scene(self):
         if self.scene is None:
+            self._completing_scene = False
+            return
+        # 延迟期间用户可能已主动关闭场景窗
+        if not self.scene.isVisible():
+            self.scene = None
+            self._completing_scene = False
             return
         kind, name = self._scene_kind, self._scene_name
         final = assets.get_work_final(name) if kind == "work" else assets.get_home_final(name)
@@ -369,6 +385,7 @@ class App:
             say(pick_line(cfg.get("lines", [])))
         self._scene_kind = None
         self._scene_name = None
+        self._completing_scene = False
 
     def show_scene_image(self, path, kind, name):
         """将已触发的工作/居家结果同步到桌面宠物窗。"""
