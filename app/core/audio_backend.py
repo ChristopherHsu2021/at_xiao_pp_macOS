@@ -38,6 +38,8 @@ class _BasePlayer(QObject):
     playbackStateChanged = pyqtSignal(int)
     mediaStatusChanged = pyqtSignal(int)
     errorOccurred = pyqtSignal(int, str)
+    # 兼容 QMediaPlayer.sourceChanged(QUrl)：加载/清空音源时发出，供 UI 同步状态
+    sourceChanged = pyqtSignal(QUrl)
 
     def __init__(self):
         super().__init__()
@@ -128,12 +130,14 @@ if IS_MAC:
                 self.stop()
                 self._current_path = ""
                 self.mediaStatusChanged.emit(int(MediaStatus.NoMedia))
+                self.sourceChanged.emit(QUrl())
                 return
             path = url.toLocalFile() if isinstance(url, QUrl) else str(url)
             if not path:
                 return
             self.stop()
             self._create_player(path)
+            self.sourceChanged.emit(url if isinstance(url, QUrl) else QUrl.fromLocalFile(path))
 
         def play(self):
             if self._av is None:
