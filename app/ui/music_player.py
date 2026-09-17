@@ -2921,7 +2921,9 @@ class MusicPlayer:
         self.player.errorOccurred.connect(self._on_media_error)
         self._apply_player_loops()
         self.set_volume(config.settings.get("volume", DEFAULT_MUSIC_VOLUME))
-        self.refresh_tracks()
+        # 延迟到窗口显示后再扫描曲库：避免启动期同步「全量磁盘扫描 + 逐文件解析时长」
+        # 阻塞主线程（macOS Intel VM + Rosetta 下尤为明显，表现为启动极慢/像起不来）。
+        QTimer.singleShot(50, self.refresh_tracks)
         self.window = None
         self.lyric_overlay = None
         self._closing = False

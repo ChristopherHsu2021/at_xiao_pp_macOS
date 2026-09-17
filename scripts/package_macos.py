@@ -177,6 +177,62 @@ def _prune_app(app_dir: Path) -> None:
         print(f"removed QtPdf framework: {qt_pdf}")
 
 
+def _find_libpython() -> Path | None:
+    """定位构建用 Python 的共享库（libpython dylib），用于物化到 bundle。
+
+    框架式 Python：本体是 Python.framework/Versions/x/Python（同时是可 dlopen 的动态库）。
+    非框架（homebrew/pyenv）：本体是 lib/libpython3.x.dylib。
+    """
+    prefix = Path(sys.prefix)
+    cands: list[Path] = []
+    cands += list(prefix.rglob("libpython*.dylib"))
+    cands += list(prefix.rglob("libpython*.so"))
+    cands.append(Path(os.path.realpath(sys.executable)))
+    cands.append(prefix / "Python")
+    for c in cands:
+        try:
+            if c.exists() and not c.is_symlink():
+                return c
+        except OSError:
+            continue
+    # 回退：允许符号链接，解析其真实目标后再判定
+    for c in cands:
+        try:
+            r = Path(os.path.realpath(c))
+            if r.exists() and not r.is_symlink():
+                return r
+        except OSError:
+            continue
+    return None
+
+
+def _ensure_python_lib(app_dir: Path) -> None:
+    """确保 Contents/Frameworks/Python 是真实存在的 libpython（非悬空符号链接）。
+
+    关键修复：PyInstaller 在部分框架式 Python 上会把该文件生成为符号链接，
+    dmg 拷贝时 shutil.copytree(ignore_dangling_symlinks=True) 会静默丢弃它，
+    导致运行时 [PYI-848] Failed to load Python shared library -> 启动直接失败且
+    不产生崩溃报告（正是 run#13 废包的根因）。这里强制物化为真实文件。
+    """
+    fw = app_dir / "Contents" / "Frameworks"
+    fw.mkdir(parents=True, exist_ok=True)
+    py = fw / "Python"
+    if py.exists() and not py.is_symlink():
+        print(f"Python 共享库已为真实文件，跳过物化：{py}")
+        return
+    src = _find_libpython()
+    if src is None:
+        raise RuntimeError(
+            "未能定位构建用 Python 的共享库（libpython），无法物化 "
+            "Contents/Frameworks/Python。请检查 CI 使用的 Python 是否为框架/"
+            "含 libpython 的构建。"
+        )
+    if py.is_symlink() or py.exists():
+        py.unlink()
+    shutil.copy2(src, py)
+    print(f"已物化 Python 共享库 -> {py}（来源 {src}，{py.stat().st_size} 字节）")
+
+
 def _ensure_qt_conf(app_dir: Path) -> None:
     """显式写入 qt.conf，强制 Qt 用文件系统路径解析 Qt 库/插件，而非查询主 bundle。
 
@@ -231,6 +287,7 @@ def build_app() -> Path:
     app = DIST / "AT小PP.app"
     if not app.exists():
         raise FileNotFoundError(f"未生成应用包：{app}")
+    _ensure_python_lib(app)
     _prune_app(app)
     _ensure_qt_conf(app)
     _verify_multimedia_plugins(app)
@@ -246,8 +303,20 @@ def build_dmg(app_dir: Path) -> Path:
         shutil.rmtree(stage, ignore_errors=True)
     stage.mkdir(parents=True)
     app_dest = stage / "AT小PP.app"
-    # ignore_dangling_symlinks=True：Qt 目录可能残留悬空软链，不兜底会整包崩溃
-    shutil.copytree(app_dir, app_dest, ignore_dangling_symlinks=True)
+    # symlinks=True：忠实保留 bundle 内所有符号链接（含 Qt 的 Frameworks/Resources
+    # 互为软链、以及可能的悬空链），绝不静默丢弃文件。
+    # 注意：绝不能用 ignore_dangling_symlinks=True —— 它会把悬空软链直接跳过，
+    # 导致 run#13 废包（Contents/Frameworks/Python 被丢弃 → [PYI-848] 启动失败，
+    # 且整包体积比正常小很多）。
+    shutil.copytree(app_dir, app_dest, symlinks=True)
+    # 致命校验：拷贝后必须存在 Python 共享库（已由 _ensure_python_lib 物化为真实文件）。
+    # 若缺失直接构建失败，绝不发布残缺包。
+    py_lib = app_dest / "Contents" / "Frameworks" / "Python"
+    if not py_lib.exists():
+        raise RuntimeError(
+            f"致命：dmg 拷贝后缺失 {py_lib}（Python 共享库）。"
+            "构建产物不完整，已中止发布。请检查 _ensure_python_lib / copytree 逻辑。"
+        )
 
     # Applications 快捷方式（拖放安装入口：把 .app 拖进这里即装到 /Applications）
     os.symlink("/Applications", str(stage / "Applications"))
