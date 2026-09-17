@@ -612,16 +612,25 @@ _MAC_RECEIPT_PATH = os.path.join(_MAC_RECEIPT_DIR, "install_receipt.json")
 
 
 def _macos_payload_app_path() -> str:
-    """安装器 .app 内置的真实应用包路径（优先 Contents/MacOS/payload，兼容 Resources）。"""
+    """安装器 .app 内置的真实应用包路径。
+
+    PyInstaller 在 macOS BUNDLE 中把 datas 放在 ``sys._MEIPASS``（实际为
+    ``Contents/Frameworks``），因此优先从 MEIPASS 找；其余路径仅作兼容兜底。
+    """
+    app_dir = APP_NAME + ".app"
+    candidates: list[str] = []
+    meipass = getattr(sys, "_MEIPASS", "")
+    if meipass:
+        candidates.append(os.path.join(meipass, "payload", app_dir))
     if getattr(sys, "frozen", False):
         macos_dir = os.path.dirname(sys.executable)  # .../Contents/MacOS
-        cand = os.path.join(macos_dir, "payload", APP_NAME + ".app")
+        contents = os.path.dirname(macos_dir)
+        candidates.append(os.path.join(contents, "Frameworks", "payload", app_dir))
+        candidates.append(os.path.join(macos_dir, "payload", app_dir))
+        candidates.append(os.path.join(contents, "Resources", "payload", app_dir))
+    for cand in candidates:
         if os.path.isdir(cand):
             return cand
-        contents = os.path.dirname(macos_dir)
-        cand2 = os.path.join(contents, "Resources", "payload", APP_NAME + ".app")
-        if os.path.isdir(cand2):
-            return cand2
     return ""
 
 
