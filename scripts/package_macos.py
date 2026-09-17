@@ -25,6 +25,7 @@ import argparse
 import os
 import shutil
 import subprocess
+import struct
 import sys
 import tempfile
 from pathlib import Path
@@ -83,23 +84,54 @@ def ensure_icns() -> None:
     iconset.mkdir()
     # Apple 标准 iconset 恰好 10 个成员（多出 icon_64x64/icon_1024x1024 等非标准
     # 文件名会让 iconutil 直接报 "Failed to generate ICNS"，已踩坑验证）。
+    # 命名 -> (像素尺寸, 对应 ICNS OSType)
+    #   ic07=128 ic08=256 ic09=512 ic10=512@2x ic11=16@2x ic12=32@2x ic13=128@2x ic14=256@2x
     entries = [
-        ("icon_16x16.png", 16),
-        ("icon_16x16@2x.png", 32),
-        ("icon_32x32.png", 32),
-        ("icon_32x32@2x.png", 64),
-        ("icon_128x128.png", 128),
-        ("icon_128x128@2x.png", 256),
-        ("icon_256x256.png", 256),
-        ("icon_256x256@2x.png", 512),
-        ("icon_512x512.png", 512),
-        ("icon_512x512@2x.png", 1024),
+        ("icon_16x16.png", 16, None),
+        ("icon_16x16@2x.png", 32, "ic11"),
+        ("icon_32x32.png", 32, None),
+        ("icon_32x32@2x.png", 64, "ic12"),
+        ("icon_128x128.png", 128, "ic07"),
+        ("icon_128x128@2x.png", 256, "ic13"),
+        ("icon_256x256.png", 256, "ic08"),
+        ("icon_256x256@2x.png", 512, "ic14"),
+        ("icon_512x512.png", 512, "ic09"),
+        ("icon_512x512@2x.png", 1024, "ic10"),
     ]
-    for name, px in entries:
+    for name, px, _ostype in entries:
         out = iconset / name
         _run(["sips", "-z", str(px), str(px), str(png), "--out", str(out)])
-    _run(["iconutil", "--convert", "icns", "--output", str(icns), str(iconset)])
+
+    # 优先用 iconutil 官方转换；它在部分 runner/环境下会无故报
+    # "Failed to generate ICNS"（无 verbose 可查，社区多起同类案例），
+    # 因此失败时回退为手工组装 ICNS 容器——现代 .icns 支持直接内嵌 PNG，
+    # 此方法结果 100% 确定性，不依赖 iconutil。
+    try:
+        _run(["iconutil", "--convert", "icns", "--output", str(icns), str(iconset)])
+    except subprocess.CalledProcessError:
+        print("iconutil 失败，回退为手工组装 ICNS（PNG 内嵌容器）...")
+        _write_icns_manual(icns, iconset, entries)
     print(f"已生成：{icns}")
+
+
+def _write_icns_manual(
+    icns: Path,
+    iconset: Path,
+    entries: list[tuple[str, int, str | None]],
+) -> None:
+    """手工组装 ICNS：'icns' 魔数 + 总长度 + 若干 (OSType, 长度, PNG 数据) 条目。
+
+    现代 macOS（10.15+）的 .icns 允许 PNG 压缩条目， Finder/Dock 均正常显示。
+    """
+    blocks: list[bytes] = []
+    for name, _px, ostype in entries:
+        if not ostype:
+            continue  # icon_16x16/icon_32x32 的一倍图可省略（有 @2x 已足够）
+        data = (iconset / name).read_bytes()
+        blocks.append(ostype.encode("ascii") + struct.pack(">I", len(data) + 8) + data)
+    total = 8 + sum(len(b) for b in blocks)
+    payload = b"icns" + struct.pack(">I", total) + b"".join(blocks)
+    icns.write_bytes(payload)
 
 
 def _pyinstaller(spec: Path, clean: bool) -> None:
