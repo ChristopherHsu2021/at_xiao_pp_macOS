@@ -89,6 +89,21 @@ if not IS_MAC:
 
 a = Analysis(["main.py"], **analysis_kwargs)
 
+if IS_MAC:
+    # PyInstaller 的 PyQt6.QtMultimedia hook 只收 Python 绑定与 multimedia 插件，
+    # 不收插件依赖的 Qt6Multimedia 动态库（framework 或 libQt6Multimedia.dylib），
+    # 导致 darwinmedia 后端插件 dlopen 失败 -> 'No QtMultimedia backends found' -> 播放无声。
+    # 用 collect_dynamic_libs 让 PyInstaller 自行解析 QtMultimedia.abi3.so 的依赖并收集，
+    # 与成功收集 Qt6Core/QtGui 同一机制，必然找得到源。
+    try:
+        from PyInstaller.utils.hooks import collect_dynamic_libs
+        extra_bins, _ = collect_dynamic_libs("PyQt6.QtMultimedia")
+        if extra_bins:
+            a.binaries += extra_bins
+            print(f"[build.spec] 已为 QtMultimedia 收集动态库 {len(extra_bins)} 个")
+    except Exception as e:
+        print(f"[build.spec] collect_dynamic_libs(PyQt6.QtMultimedia) 失败：{e}")
+
 pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 
 if IS_MAC:

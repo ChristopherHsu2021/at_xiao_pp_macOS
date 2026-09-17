@@ -319,64 +319,111 @@ def _ensure_qt_conf(app_dir: Path) -> None:
         print(f"wrote qt.conf -> {t} (Prefix={prefix})")
 
 
-def _ensure_qt_frameworks(app_dir: Path) -> None:
-    """显式把 PyQt6 的 Qt6*.framework 补进 bundle 的 lib 目录。
+def _qt6_lib_has_multimedia(lib_dir: Path) -> bool:
+    """判断某 Qt6 lib 目录是否含 Qt6Multimedia 动态库（两种形态：.framework 或扁平 dylib）。"""
+    try:
+        names = [n for n in os.listdir(str(lib_dir))]
+    except OSError:
+        return False
+    if any(n.startswith("Qt6") and n.endswith(".framework") for n in names):
+        return True
+    return any(n.startswith("libQt6Multimedia") and n.endswith(".dylib") for n in names)
 
-    背景：PyInstaller 的 PyQt6.QtMultimedia hook 会收集 multimedia 插件，但常漏收
-    插件依赖的 Qt6Multimedia.framework（以及 Quick/Widgets 等）。缺失时 darwinmedia
-    插件（AVFoundation 后端）无法 dlopen -> 'No QtMultimedia backends found' ->
-    QMediaPlayer 初始化失败、音乐播放无声。实测 run#16/run#17 的包均缺失该框架 -> 无声。
 
-    关键坑（run#17 踩过）：bundle 内可能同时有 Contents/Frameworks/PyQt6/Qt6 与
-    Contents/Resources/PyQt6/Qt6 两份【真实】目录（非软链、两树不一致），PyInstaller
-    把框架只收进其中一份。因此不能“任一已有就整体跳过”，必须【逐根复制】——
-    给每一个缺该框架的根都补上，否则运行期加载器仍可能命中缺框架的那一份。
+def _find_qt6_lib() -> Path | None:
+    """定位 PyQt6 自带的 Qt6 库目录（含 Qt6Multimedia.framework 或 libQt6Multimedia*.dylib）。
+
+    注意 PyQt6 在不同安装下形态不一：有的用 .framework 目录，有的用扁平 libQt6*.dylib。
+    这里多锚点探测 + 兜底全树 rglob，确保两种形态都能定位到源。
     """
-    # 1) 定位源 Qt6 lib（PyQt6 安装位置的 Qt6/lib），优先其下的 Qt6*.framework
-    src_lib = None
-    src_frameworks: list[Path] = []
+    anchors: list[str] = []
     try:
         import PyQt6
-        cand = Path(PyQt6.__file__).resolve().parent / "Qt6" / "lib"
-        if cand.is_dir():
-            src_lib = cand
-            src_frameworks = sorted(cand.glob("Qt6*.framework"))
+        anchors.append(os.path.join(os.path.realpath(PyQt6.__file__), "Qt6", "lib"))
     except Exception:
         pass
-    if not src_frameworks:
-        # 回退：从整个 sys.prefix 直接定位 Qt6Multimedia 系列框架
-        hits = sorted(Path(sys.prefix).rglob("Qt6Multimedia.framework"))
-        if hits:
-            src_lib = hits[0].parent
-            src_frameworks = sorted(src_lib.glob("Qt6*.framework"))
-    if not src_frameworks:
-        print("警告：未找到任何源 Qt6*.framework，跳过 Qt 框架补全（播放可能仍无声）")
-        return
+    try:
+        import PyQt6.QtCore as _qc
+        anchors.append(os.path.join(os.path.dirname(os.path.realpath(_qc.__file__)), "Qt6", "lib"))
+    except Exception:
+        pass
+    try:
+        import site
+        for s in site.getsitepackages():
+            anchors.append(os.path.join(s, "PyQt6", "Qt6", "lib"))
+    except Exception:
+        pass
+    anchors += [sys.prefix, os.path.dirname(sys.prefix)]
+    seen: set[str] = set()
+    dirs: list[str] = []
+    for a in anchors:
+        ra = os.path.realpath(a)
+        if ra and ra not in seen:
+            seen.add(ra)
+            dirs.append(ra)
+    # 直接命中
+    for d in dirs:
+        if os.path.isdir(d) and _qt6_lib_has_multimedia(Path(d)):
+            return Path(d)
+    # 兜底：rglob 全树（限深，避免卡死）
+    for d in dirs:
+        try:
+            for root, sub, _files in os.walk(d):
+                if root.count(os.sep) - d.count(os.sep) > 6:
+                    sub[:] = []
+                    continue
+                if _qt6_lib_has_multimedia(Path(root)):
+                    return Path(root)
+        except Exception:
+            continue
+    return None
 
-    # 2) bundle 内所有 PyQt6/Qt6 根（Frameworks 与 Resources 可能互为镜像/也可能两份独立）
+
+def _ensure_qt_frameworks(app_dir: Path) -> None:
+    """把 PyQt6 的 Qt6Multimedia 动态库补进 bundle（.framework 或扁平 dylib 两种形态都处理）。
+
+    背景：PyInstaller 的 PyQt6.QtMultimedia hook 漏收插件依赖的 Qt6Multimedia 动态库 ->
+    darwinmedia 后端插件 dlopen 失败 -> 'No QtMultimedia backends found' -> 播放无声。
+    build.spec 已用 collect_dynamic_libs 在 PyInstaller 阶段收集；此处为兜底：若 PyInstaller
+    仍漏收（或只收进多份 Qt6 树中的一份），则从 PyQt6 安装位置补全，且【逐根复制】
+    （覆盖 Frameworks/Resources 多份 Qt6 树，任一份缺都补上）。
+    """
+    src_lib = _find_qt6_lib()
+    if src_lib is None:
+        print("警告：未定位到源 Qt6 库目录，跳过 Qt 动态库补全（若 build.spec 已收集则无碍）")
+        return
     qt6_roots = {p.resolve() for p in app_dir.rglob("PyQt6/Qt6") if p.is_dir()}
     if not qt6_roots:
-        print("警告：bundle 内未找到 PyQt6/Qt6，跳过 Qt 框架补全")
+        print("警告：bundle 内未找到 PyQt6/Qt6，跳过 Qt 动态库补全")
         return
-
+    # 待复制项：Qt6*.framework 目录 + libQt6*.dylib 文件（两种形态都处理）
+    items: list[str] = []
+    try:
+        for n in os.listdir(str(src_lib)):
+            if (n.startswith("Qt6") and n.endswith(".framework")) or \
+               (n.startswith("libQt6") and n.endswith(".dylib")):
+                items.append(n)
+    except OSError:
+        pass
     copied = []
-    for fw in src_frameworks:
-        fw_real = fw.resolve() if fw.is_symlink() else fw
-        if not fw_real.is_dir():
-            continue
+    for item in items:
+        src = src_lib / item
         for root in sorted(qt6_roots):
-            dst = root / "lib" / fw.name
+            dst = root / "lib" / item
             if dst.exists():
                 continue  # 该根已有，跳过；其它缺的根仍会补
             try:
-                shutil.copytree(fw_real, dst, symlinks=True)
-                copied.append(f"{fw.name} -> {root.name}/lib")
+                if src.is_dir():
+                    shutil.copytree(str(src), str(dst), symlinks=True)
+                else:
+                    shutil.copy2(str(src), str(dst))
+                copied.append(f"{item} -> {root.name}/lib")
             except Exception as e:
-                print(f"警告：拷贝框架 {fw.name} 到 {root} 失败：{e}")
+                print(f"警告：拷贝 {item} 到 {root} 失败：{e}")
     if copied:
-        print(f"已补全缺失 Qt 框架 {len(copied)} 处：{'; '.join(copied)}")
+        print(f"已补全缺失 Qt 动态库 {len(copied)} 处：{'; '.join(copied)}")
     else:
-        print("Qt 框架已齐全，无需补全")
+        print("Qt 动态库已齐全（PyInstaller 阶段已收集或无需补全）")
 
 
 def _verify_multimedia_plugins(app_dir: Path) -> None:
@@ -391,19 +438,19 @@ def _verify_multimedia_plugins(app_dir: Path) -> None:
         )
     names = [f.name for f in sorted(multimedia.iterdir())]
     print(f"multimedia 后端插件已就位：{names}")
-    # 插件存在 ≠ 后端可用：darwinmedia 插件依赖 Qt6Multimedia.framework。
-    # bundle 可能有多份 PyQt6/Qt6 树（Frameworks/Resources），任一份缺框架都会让
-    # 加载器在该份上失败 -> QMediaPlayer 无声。因此逐根校验，全部含框架才算通过。
+    # 插件存在 ≠ 后端可用：darwinmedia 插件依赖 Qt6Multimedia 动态库
+    #（Qt6Multimedia.framework 或扁平 libQt6Multimedia*.dylib，两种形态都可能）。
+    # bundle 可能有多份 PyQt6/Qt6 树（Frameworks/Resources），任一份缺该库都会让
+    # 加载器在该份上失败 -> QMediaPlayer 无声。逐根校验，全部含该库才算通过。
     qt6_roots = {p.resolve() for p in app_dir.rglob("PyQt6/Qt6") if p.is_dir()}
-    missing = [str(r) for r in sorted(qt6_roots)
-               if not (r / "lib" / "Qt6Multimedia.framework").exists()]
+    missing = [str(r) for r in sorted(qt6_roots) if not _qt6_lib_has_multimedia(r / "lib")]
     if not qt6_roots or missing:
         raise RuntimeError(
-            "致命：bundle 内缺失 Qt6Multimedia.framework（缺框架的根："
-            + "; ".join(missing) + "）！multimedia 插件（AVFoundation 后端）将因依赖缺失而无法加载，"
-            "导致 QMediaPlayer 初始化失败、音乐播放无声。请检查 _ensure_qt_frameworks 是否生效。"
+            "致命：bundle 内缺失 Qt6Multimedia 动态库（Qt6Multimedia.framework 或 libQt6Multimedia*.dylib；"
+            f"缺库的根：{'; '.join(missing)}）！multimedia 插件（AVFoundation 后端）将因依赖缺失而无法加载，"
+            "导致 QMediaPlayer 初始化失败、音乐播放无声。请检查 build.spec 的 collect_dynamic_libs 与 _ensure_qt_frameworks。"
         )
-    print(f"Qt6Multimedia.framework 已就位（根数={len(qt6_roots)}，全部含框架）")
+    print(f"Qt6Multimedia 动态库已就位（根数={len(qt6_roots)}，全部含库）")
 
 
 def build_app() -> Path:
