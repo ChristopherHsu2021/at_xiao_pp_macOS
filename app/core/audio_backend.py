@@ -65,13 +65,17 @@ if IS_MAC:
         """AVAudioPlayer 播放结束回调桥接（结束 -> 触发 EndOfMedia 状态）。"""
 
         def init(self):
-            self = super(_AVDelegate, self).init()
+            # PyObjC 警告：Objective-C 子类的 init 必须用 objc.super 调父类的 OC 方法，
+            # 不能用 Python 的 super()（其不解析 OC runtime 方法，会 AttributeError）。
+            self = objc.super(_AVDelegate, self).init()
             if self is None:
                 return None
             self.backend = None
             return self
 
+        @objc.signature("v@:@c")
         def audioPlayerDidFinishPlaying_successfully_(self, player, flag):
+            # v@:@c = void; self; sel; player(id); successfully(BOOL 编为 char)
             if self.backend is not None:
                 self.backend._on_finished()
 
