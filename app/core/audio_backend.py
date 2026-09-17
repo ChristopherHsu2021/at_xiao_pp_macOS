@@ -35,8 +35,10 @@ class _BasePlayer(QObject):
 
     positionChanged = pyqtSignal(int)
     durationChanged = pyqtSignal(int)
-    playbackStateChanged = pyqtSignal(int)
-    mediaStatusChanged = pyqtSignal(int)
+    # macOS 这一版 PyQt6 的 PlaybackState/MediaStatus 是普通 enum.Enum（非 IntEnum），
+    # 不能用 int(成员)；按 QMediaPlayer 原语义直接发射枚举成员，调用方据此做成员比较。
+    playbackStateChanged = pyqtSignal(object)
+    mediaStatusChanged = pyqtSignal(object)
     errorOccurred = pyqtSignal(int, str)
     # 兼容 QMediaPlayer.sourceChanged(QUrl)：加载/清空音源时发出，供 UI 同步状态
     sourceChanged = pyqtSignal(QUrl)
@@ -110,7 +112,7 @@ if IS_MAC:
             av = AVAudioPlayer.alloc().initWithContentsOfURL_error_(url, None)
             if av is None:
                 self.errorOccurred.emit(-1, "AVAudioPlayer init failed")
-                self.mediaStatusChanged.emit(int(MediaStatus.InvalidMedia))
+                self.mediaStatusChanged.emit(MediaStatus.InvalidMedia)
                 return
             av.setDelegate_(self._delegate)
             av.setVolume_(self._volume)
@@ -120,7 +122,7 @@ if IS_MAC:
             self._current_path = path
             dur_ms = int(av.duration() * 1000)
             self.durationChanged.emit(dur_ms)
-            self.mediaStatusChanged.emit(int(MediaStatus.LoadedMedia))
+            self.mediaStatusChanged.emit(MediaStatus.LoadedMedia)
 
         # ---------- 公开接口（与 QMediaPlayer 一致） ----------
 
@@ -129,7 +131,7 @@ if IS_MAC:
             if isinstance(url, QUrl) and url.isEmpty():
                 self.stop()
                 self._current_path = ""
-                self.mediaStatusChanged.emit(int(MediaStatus.NoMedia))
+                self.mediaStatusChanged.emit(MediaStatus.NoMedia)
                 self.sourceChanged.emit(QUrl())
                 return
             path = url.toLocalFile() if isinstance(url, QUrl) else str(url)
@@ -144,7 +146,7 @@ if IS_MAC:
                 return
             if self._av.play():
                 self._state = PlaybackState.PlayingState
-                self.playbackStateChanged.emit(int(self._state))
+                self.playbackStateChanged.emit(self._state)
                 if not self._timer.isActive():
                     self._timer.start()
             else:
@@ -155,7 +157,7 @@ if IS_MAC:
                 return
             self._av.pause()
             self._state = PlaybackState.PausedState
-            self.playbackStateChanged.emit(int(self._state))
+            self.playbackStateChanged.emit(self._state)
             self._timer.stop()
 
         def stop(self):
@@ -166,7 +168,7 @@ if IS_MAC:
                 except Exception:  # noqa: BLE001
                     pass
             self._state = PlaybackState.StoppedState
-            self.playbackStateChanged.emit(int(self._state))
+            self.playbackStateChanged.emit(self._state)
             self._timer.stop()
 
         def isPlaying(self) -> bool:
@@ -189,7 +191,9 @@ if IS_MAC:
 
         def setLoops(self, loops):
             # QMediaPlayer.Loops.Infinite / Once —— 映射为 AVAudioPlayer 的 -1 / 0
-            self._loops = -1 if int(loops) == int(Loops.Infinite) else 0
+            # 兼容普通 Enum（macOS PyQt6）：用 .value 取整数，成员或 int 都能接
+            v = loops.value if hasattr(loops, "value") else loops
+            self._loops = -1 if int(v) == int(Loops.Infinite.value) else 0
             if self._av is not None:
                 self._av.setNumberOfLoops_(self._loops)
 
@@ -198,12 +202,13 @@ if IS_MAC:
             if self._av is not None:
                 self._av.setVolume_(self._volume)
 
-        def mediaStatus(self) -> int:
+        def mediaStatus(self):
+            # 返回枚举成员（与 QMediaPlayer.mediaStatus() 语义一致），供调用方做成员比较
             if not self._current_path:
-                return int(MediaStatus.NoMedia)
+                return MediaStatus.NoMedia
             if self._av is None:
-                return int(MediaStatus.InvalidMedia)
-            return int(MediaStatus.LoadedMedia)
+                return MediaStatus.InvalidMedia
+            return MediaStatus.LoadedMedia
 
         # ---------- 内部：轮询 / 结束回调 ----------
 
@@ -216,9 +221,9 @@ if IS_MAC:
             self._timer.stop()
             self.positionChanged.emit(self.duration())
             self._state = PlaybackState.StoppedState
-            self.playbackStateChanged.emit(int(self._state))
+            self.playbackStateChanged.emit(self._state)
             # 通知业务层：媒体播放结束（music_player._on_status 据此切歌/单曲循环）
-            self.mediaStatusChanged.emit(int(MediaStatus.EndOfMedia))
+            self.mediaStatusChanged.emit(MediaStatus.EndOfMedia)
 
 
 class _MacAudioShim:
