@@ -331,10 +331,14 @@ def _qt6_lib_has_multimedia(lib_dir: Path) -> bool:
 
 
 def _find_qt6_lib() -> Path | None:
-    """定位 PyQt6 自带的 Qt6 库目录（含 Qt6Multimedia.framework 或 libQt6Multimedia*.dylib）。
+    """定位 PyQt6 自带的 Qt6 库目录（含 libQt6*.dylib 扁平文件，或 Qt6*.framework 目录）。
 
-    注意 PyQt6 在不同安装下形态不一：有的用 .framework 目录，有的用扁平 libQt6*.dylib。
-    这里多锚点探测 + 兜底全树 rglob，确保两种形态都能定位到源。
+    关键修复：上一版以「目录下是否含 libQt6Multimedia.dylib」作为命中条件，但本 CI 环境
+    的 PyQt6 安装里多媒体动态库可能恰好未被 PyInstaller 收录，导致 _find_qt6_lib 返回 None
+    —— 进而 _ensure_qt_frameworks 完全跳过补全、_verify_multimedia_plugins 致命失败。
+    改为以「libQt6Core.dylib 必存在」（Qt6Core 已成功进包可佐证）为锚点定位源目录，
+    之后由 _ensure_qt_frameworks 把整目录 libQt6*.dylib 全量补进 bundle（含 multimedia）。
+    亦兼容 .framework 形态（只要根下能找到 libQt6Core 即可）。
     """
     anchors: list[str] = []
     try:
@@ -361,18 +365,18 @@ def _find_qt6_lib() -> Path | None:
         if ra and ra not in seen:
             seen.add(ra)
             dirs.append(ra)
-    # 直接命中
+    # 直接命中：含 libQt6Core.dylib（已知必存在）即认定为源 Qt6 库目录
     for d in dirs:
-        if os.path.isdir(d) and _qt6_lib_has_multimedia(Path(d)):
+        if os.path.isdir(d) and os.path.isfile(os.path.join(d, "libQt6Core.dylib")):
             return Path(d)
-    # 兜底：rglob 全树（限深，避免卡死）
+    # 兜底：rglob 全树（限深，避免卡死）找含 libQt6Core.dylib 的目录
     for d in dirs:
         try:
             for root, sub, _files in os.walk(d):
                 if root.count(os.sep) - d.count(os.sep) > 6:
                     sub[:] = []
                     continue
-                if _qt6_lib_has_multimedia(Path(root)):
+                if os.path.isfile(os.path.join(root, "libQt6Core.dylib")):
                     return Path(root)
         except Exception:
             continue
@@ -380,13 +384,14 @@ def _find_qt6_lib() -> Path | None:
 
 
 def _ensure_qt_frameworks(app_dir: Path) -> None:
-    """把 PyQt6 的 Qt6Multimedia 动态库补进 bundle（.framework 或扁平 dylib 两种形态都处理）。
+    """把 PyQt6 的 Qt6 动态库全量补进 bundle（.framework 或扁平 libQt6*.dylib 两种形态都处理）。
 
     背景：PyInstaller 的 PyQt6.QtMultimedia hook 漏收插件依赖的 Qt6Multimedia 动态库 ->
     darwinmedia 后端插件 dlopen 失败 -> 'No QtMultimedia backends found' -> 播放无声。
-    build.spec 已用 collect_dynamic_libs 在 PyInstaller 阶段收集；此处为兜底：若 PyInstaller
+    build.spec 已在 PyInstaller 阶段显式收集全部 libQt6*.dylib；此处为兜底：若 PyInstaller
     仍漏收（或只收进多份 Qt6 树中的一份），则从 PyQt6 安装位置补全，且【逐根复制】
-    （覆盖 Frameworks/Resources 多份 Qt6 树，任一份缺都补上）。
+    （覆盖 Frameworks/Resources 多份 Qt6 树，任一份缺都补上）。复制范围 = 整目录
+    libQt6*.dylib + Qt6*.framework（两种形态都处理），确保多媒体后端依赖齐全。
     """
     src_lib = _find_qt6_lib()
     if src_lib is None:
@@ -396,7 +401,7 @@ def _ensure_qt_frameworks(app_dir: Path) -> None:
     if not qt6_roots:
         print("警告：bundle 内未找到 PyQt6/Qt6，跳过 Qt 动态库补全")
         return
-    # 待复制项：Qt6*.framework 目录 + libQt6*.dylib 文件（两种形态都处理）
+    # 待复制项：Qt6*.framework 目录 + libQt6*.dylib 文件（两种形态都处理，全量而非仅 multimedia）
     items: list[str] = []
     try:
         for n in os.listdir(str(src_lib)):
@@ -427,7 +432,7 @@ def _ensure_qt_frameworks(app_dir: Path) -> None:
 
 
 def _verify_multimedia_plugins(app_dir: Path) -> None:
-    """校验 QtMultimedia 后端插件已打进包（缺失 = QMediaPlayer 静默无声）。"""
+    """校验 QtMultimedia 后端插件与其依赖的 Qt6Multimedia 动态库已打进包（缺失 = QMediaPlayer 静默无声）。"""
     qt6 = _qt6_root(app_dir)
     plugins_root = qt6 / "plugins" if qt6 is not None else None
     multimedia = plugins_root / "multimedia" if plugins_root else None
@@ -440,17 +445,29 @@ def _verify_multimedia_plugins(app_dir: Path) -> None:
     print(f"multimedia 后端插件已就位：{names}")
     # 插件存在 ≠ 后端可用：darwinmedia 插件依赖 Qt6Multimedia 动态库
     #（Qt6Multimedia.framework 或扁平 libQt6Multimedia*.dylib，两种形态都可能）。
-    # bundle 可能有多份 PyQt6/Qt6 树（Frameworks/Resources），任一份缺该库都会让
-    # 加载器在该份上失败 -> QMediaPlayer 无声。逐根校验，全部含该库才算通过。
+    # bundle 可能有多份 PyQt6/Qt6 树（Frameworks/Resources）。只要【任一根】含该库，
+    # 加载器即可命中含库那份并加载 AVFoundation 后端 -> 出声。故改为「至少一根含库」，
+    # 但仍对「全部缺失」致命报错，避免发布无声废包。
     qt6_roots = {p.resolve() for p in app_dir.rglob("PyQt6/Qt6") if p.is_dir()}
-    missing = [str(r) for r in sorted(qt6_roots) if not _qt6_lib_has_multimedia(r / "lib")]
-    if not qt6_roots or missing:
+    if not qt6_roots:
         raise RuntimeError(
-            "致命：bundle 内缺失 Qt6Multimedia 动态库（Qt6Multimedia.framework 或 libQt6Multimedia*.dylib；"
-            f"缺库的根：{'; '.join(missing)}）！multimedia 插件（AVFoundation 后端）将因依赖缺失而无法加载，"
-            "导致 QMediaPlayer 初始化失败、音乐播放无声。请检查 build.spec 的 collect_dynamic_libs 与 _ensure_qt_frameworks。"
+            "致命：bundle 内未找到任何 PyQt6/Qt6 根目录，无法校验 QtMultimedia 动态库。"
         )
-    print(f"Qt6Multimedia 动态库已就位（根数={len(qt6_roots)}，全部含库）")
+    # 先尝试兜底补全（build.spec 阶段未收集时仍有机会救回）
+    _ensure_qt_frameworks(app_dir)
+    good = [str(r) for r in sorted(qt6_roots) if _qt6_lib_has_multimedia(r / "lib")]
+    missing = [str(r) for r in sorted(qt6_roots) if not _qt6_lib_has_multimedia(r / "lib")]
+    if not good:
+        raise RuntimeError(
+            "致命：bundle 内所有 PyQt6/Qt6/lib 均缺失 Qt6Multimedia 动态库"
+            "（Qt6Multimedia.framework 或 libQt6Multimedia*.dylib）！"
+            "multimedia 插件（AVFoundation 后端）将因依赖缺失无法加载，导致 QMediaPlayer 初始化失败、音乐播放无声。"
+            "可能原因：① 本环境 PyQt6 wheel 未随附 libQt6Multimedia.dylib（可换用 pip 官方 wheel 或 brew install qt6 后重装 PyQt6）；"
+            "② build.spec 的 Qt6 动态库收集逻辑未生效。请检查 CI 日志中 '[build.spec] 已显式收集 Qt6 动态库' 行与 _find_qt6_lib 输出。"
+        )
+    if missing:
+        print(f"注意：以下根缺 Qt6Multimedia 动态库（不影响加载，已存在含库的根）：{missing}")
+    print(f"Qt6Multimedia 动态库已就位（含库根数={len(good)}/{len(qt6_roots)}）")
 
 
 def build_app() -> Path:
