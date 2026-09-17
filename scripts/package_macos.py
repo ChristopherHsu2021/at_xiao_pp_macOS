@@ -146,12 +146,24 @@ def _pyinstaller(spec: Path, clean: bool) -> None:
     _run(args)
 
 
+def _qt6_root(app_dir: Path) -> Path | None:
+    """定位 bundle 内的 PyQt6/Qt6 目录。
+
+    注意：macOS .app 的 PyInstaller one-folder 实际位于 Contents/Frameworks
+    （sys._MEIPASS），不是 Contents/MacOS —— 不能写死路径，必须全包搜索。
+    """
+    hits = [p for p in app_dir.rglob("PyQt6/Qt6") if p.is_dir()]
+    return hits[0] if hits else None
+
+
 def _prune_app(app_dir: Path) -> None:
     """删除无用的 Qt 翻译与 QtPdf，显著减小 .app 体积。"""
-    translations = app_dir / "Contents" / "MacOS" / "PyQt6" / "Qt6" / "translations"
-    if translations.exists():
-        shutil.rmtree(translations)
-        print(f"removed Qt translations: {translations}")
+    qt6 = _qt6_root(app_dir)
+    if qt6 is not None:
+        translations = qt6 / "translations"
+        if translations.exists():
+            shutil.rmtree(translations)
+            print(f"removed Qt translations: {translations}")
     qt_pdf = app_dir / "Contents" / "Frameworks" / "QtPdf.framework"
     if qt_pdf.exists():
         shutil.rmtree(qt_pdf)
@@ -166,12 +178,10 @@ def _ensure_qt_conf(app_dir: Path) -> None:
     返回 NULL 时直接 SIGSEGV（EXC_BAD_ACCESS）。显式给出 Prefix 可彻底绕开 bundle 查询。
     """
     macos_dir = app_dir / "Contents" / "MacOS"
-    # 自动定位 PyQt6/Qt6 目录（one-folder 通常在 Contents/MacOS/PyQt6/Qt6）
-    qt6_dirs = [p for p in app_dir.rglob("PyQt6/Qt6") if p.is_dir()]
-    if not qt6_dirs:
+    qt6_dir = _qt6_root(app_dir)
+    if qt6_dir is None:
         print("警告：未找到 PyQt6/Qt6 目录，跳过 qt.conf 写入")
         return
-    qt6_dir = qt6_dirs[0]
     # Prefix 为相对于 qt.conf 所在目录（Contents/MacOS）的路径
     prefix = os.path.relpath(qt6_dir, macos_dir)
     conf = (
@@ -197,9 +207,10 @@ def _ensure_qt_conf(app_dir: Path) -> None:
 
 def _verify_multimedia_plugins(app_dir: Path) -> None:
     """校验 QtMultimedia 后端插件已打进包（缺失 = QMediaPlayer 静默无声）。"""
-    plugins_root = app_dir / "Contents" / "MacOS" / "PyQt6" / "Qt6" / "plugins"
-    multimedia = plugins_root / "multimedia"
-    if not multimedia.is_dir() or not any(multimedia.iterdir()):
+    qt6 = _qt6_root(app_dir)
+    plugins_root = qt6 / "plugins" if qt6 is not None else None
+    multimedia = plugins_root / "multimedia" if plugins_root else None
+    if not multimedia or not multimedia.is_dir() or not any(multimedia.iterdir()):
         raise RuntimeError(
             "QtMultimedia 后端插件（plugins/multimedia/，AVFoundation 后端）未打进 .app！"
             "这将导致音乐播放彻底无声。请检查 PyInstaller 的 hook-PyQt6.QtMultimedia 是否生效。"
