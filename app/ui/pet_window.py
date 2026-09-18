@@ -118,6 +118,12 @@ class PetWindow(QWidget):
             Qt.WindowType.FramelessWindowHint
             | Qt.WindowType.WindowStaysOnTopHint
             | Qt.WindowType.Tool
+            # macOS 重影治本（第十六类坑）：NSWindow 阴影由窗口服务器绘制在 Qt
+            # 画布之外，并按窗口透明形状缓存。状态图切换（睡觉↔清醒）后旧形状
+            # 的阴影（灰黑色、恰似"黑白重影"）残留在画面后方，Qt 侧任何
+            # repaint/Clear 都擦不掉（像素不在可重绘区域内）。去掉系统阴影
+            # （NoDropShadowWindowHint）后窗口服务器不再缓存形状 → 重影失去来源。
+            | Qt.WindowType.NoDropShadowWindowHint
         )
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         # SubWindow 在 Windows 上经常不会被资源管理器识别为文件投放目标。

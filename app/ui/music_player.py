@@ -1791,7 +1791,13 @@ class LyricOverlayWindow(QDialog):
         self.setWindowFlags(
             Qt.WindowType.FramelessWindowHint |
             Qt.WindowType.WindowStaysOnTopHint |
-            Qt.WindowType.Tool
+            Qt.WindowType.Tool |
+            # macOS 重影治本（第十六类坑，同 pet_window）：残影来自 NSWindow
+            # 阴影对旧透明形状（上一句歌词字形）的缓存，绘制在 Qt 画布之外，
+            # run#29 的离屏 Source 渲染/整窗 Clear 均触达不到。去掉系统阴影后
+            # 浮窗再次显示时不再带回上一会话的字形阴影 → 点人物/点歌词框
+            # 打开浮窗时的"其他唱段歌词重影"失去来源。
+            Qt.WindowType.NoDropShadowWindowHint
         )
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
@@ -1800,6 +1806,13 @@ class LyricOverlayWindow(QDialog):
         self._apply_scale()
         music.player.positionChanged.connect(self.sync)
         music.player.playbackStateChanged.connect(self.sync)
+
+    def showEvent(self, e):  # noqa: N802
+        # 第三重保险：半透明窗口 hide→show 后，macOS 可能保留上一会话末帧于
+        # backing store；show 完成后异步强制一次整窗同步重绘，确保首帧就是
+        # 全新内容（仅渲染路径，无业务改动）。
+        super().showEvent(e)
+        QTimer.singleShot(0, self.repaint)
 
     def paintEvent(self, e):  # noqa: N802
         # 第二重保险：半透明悬浮窗每帧先丢弃上一帧整帧像素，防止 macOS
