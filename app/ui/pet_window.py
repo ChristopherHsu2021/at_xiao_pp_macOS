@@ -8,6 +8,7 @@
 """
 
 import os
+import sys
 import random
 import math
 from datetime import datetime
@@ -25,6 +26,31 @@ from app.core.i18n import tr
 from app.ui.status_panel import StatusPanel
 from app.ui.context_menu import build_menu
 from app.ui.common import UploadPrompt
+
+
+def _apply_macos_always_on_top(widget):
+    """macOS 专属：让窗口在所有 App 之上且切换 App 不被隐藏。
+
+    Qt 的 WindowStaysOnTopHint 在 macOS 仅把窗口设为 NSFloatingWindowLevel（浮层），
+    但 Qt.Tool 会被映射成 NSPanel；AppKit 默认在应用失活(hidesOnDeactivate)时隐藏面板，
+    表现即『点开其他软件，桌宠被隐藏』。这里直接对底层 NSWindow 关闭该行为并锁定浮层层级，
+    实现真正意义的『置顶且不被切换隐藏』。其他平台无 PyObjC，直接跳过。
+    """
+    if sys.platform != "darwin":
+        return
+    try:
+        import objc
+        from ctypes import c_void_p
+        from AppKit import NSWindow, NSFloatingWindowLevel
+        nsview = objc.objc_object(c_void_p=int(widget.winId()))
+        nswindow = nsview.window()
+        if nswindow is not None:
+            nswindow.setHidesOnDeactivate_(False)
+            nswindow.setLevel_(NSFloatingWindowLevel)
+    except Exception:
+        # 任何环境差异 / PyObjC 缺失都不应影响主流程
+        pass
+
 
 EMOJIS = [
     "😎", "🥰", "🤩", "🎤", "✨", "🌟", "🫧", "💤", "🍓", "🎵", "🔥", "☀️",
@@ -137,6 +163,13 @@ class PetWindow(QWidget):
         self.setMouseTracking(True)
         state.outfitChanged.connect(lambda _=None: self.refresh_image())
         self._enter_random_outfit()
+
+    def showEvent(self, e):  # noqa: N802
+        # macOS 专属：Qt.Tool 映射成 NSPanel，AppKit 默认在应用失活（点开其他软件）
+        # 时隐藏面板，导致桌宠被隐藏。showEvent 里对底层 NSWindow 关闭该行为，
+        # 实现『置顶且切换 App 不被隐藏』。仅窗口属性调整，无业务改动。
+        super().showEvent(e)
+        _apply_macos_always_on_top(self)
 
     # ---------------- 构建 ----------------
     def _build(self):
